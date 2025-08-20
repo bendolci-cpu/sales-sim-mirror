@@ -12,7 +12,7 @@ export default function Home() {
             <Link href="/session?mode=challenge&mock=1" className="flex h-full flex-col items-start">
               <div className="rounded-lg bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">Challenge</div>
               <h2 className="mt-4 text-xl font-semibold text-gray-900">Challenge Mode</h2>
-              <p className="mt-2 text-sm text-gray-600">Timed, guided scenarios with scoring.</p>
+              <p className="mt-2 text-sm text-gray-600">Timed, guided scenarios with scoring.</p> 
             </Link>
             <div className="mt-6">
               <Link
