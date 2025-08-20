@@ -22,7 +22,7 @@ export default function Home() {
                 Start Session
               </Link>
             </div>
-          </div> 
+          </div>   
 
           <div className="group rounded-2xl border border-gray-200 bg-white p-8 shadow transition hover:shadow-md">
             <Link href="/session?mode=practice&mock=1" className="flex h-full flex-col items-start">

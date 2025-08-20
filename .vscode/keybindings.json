@@ -1,0 +1,5 @@
+[
+  { "key": "shift+g", "command": "git.commit", "args": { "all": true } }
+]
+
+
