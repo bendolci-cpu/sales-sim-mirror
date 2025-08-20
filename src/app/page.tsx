@@ -7,7 +7,7 @@ export default function Home() {
         <h1 className="text-3xl font-semibold text-gray-900">Sales Sim</h1>
         <p className="mt-2 text-sm text-gray-600">Choose a mode to get started</p>
 
-        <div className="mt-10 grid w-full grid-cols-1 gap-6 md:grid-cols-2">
+        <div className="mt-10 grid w-full grid-cols-1 gap-6 md:grid-cols-2"> 
           <div className="group rounded-2xl border border-gray-200 bg-white p-8 shadow transition hover:shadow-md">
             <Link href="/session?mode=challenge&mock=1" className="flex h-full flex-col items-start">
               <div className="rounded-lg bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">Challenge</div>
