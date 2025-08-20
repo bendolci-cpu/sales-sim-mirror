@@ -1,0 +1,19 @@
+{
+  "version": "2.0.0",
+  "inputs": [
+    {
+      "id": "msg",
+      "type": "promptString",
+      "description": "Commit message (savepoint name)",
+      "default": "savepoint"
+    }
+  ],
+  "tasks": [
+    {
+      "label": "Savepoint",
+      "type": "shell",
+      "command": "git add -A && git commit -m \"${input:msg}\" && git push",
+      "problemMatcher": []
+    }
+  ]
+}
