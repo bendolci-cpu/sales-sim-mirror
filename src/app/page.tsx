@@ -14,7 +14,7 @@ export default function Home() {
               <h2 className="mt-4 text-xl font-semibold text-gray-900">Challenge Mode</h2> 
               <p className="mt-2 text-sm text-gray-600">Timed, guided scenarios with scoring.</p>      
             </Link>
-            <div className="mt-6">  
+            <div className="mt-6">
               <Link
                 href="/session?mode=challenge&mock=1"
                 className="inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"

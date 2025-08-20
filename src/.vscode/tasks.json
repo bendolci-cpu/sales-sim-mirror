@@ -1,19 +1,20 @@
 {
   "version": "2.0.0",
-  "inputs": [
-    {
-      "id": "msg",
-      "type": "promptString",
-      "description": "Commit message (savepoint name)",
-      "default": "savepoint"
-    }
-  ],
   "tasks": [
     {
       "label": "Savepoint",
       "type": "shell",
-      "command": "git add -A && git commit -m \"${input:msg}\" && git push",
-      "problemMatcher": []
+      "command": "read -p \"Savepoint name: \" msg; git add -A && git commit -m \"$msg\" && git push",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true
+      },
+      "options": {
+        "env": {
+          "FORCE_COLOR": "1"
+        }
+      }
     }
   ]
 }
