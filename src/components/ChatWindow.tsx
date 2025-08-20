@@ -17,9 +17,11 @@ const initialMessages: Message[] = [
 
 export type ChatWindowProps = {
   isMock?: boolean;
+  starterMessage?: string;
 };
 
-export default function ChatWindow({ isMock = true }: ChatWindowProps) {
+export default function ChatWindow({ isMock = true, starterMessage }: ChatWindowProps) {
+  const seeded = useRef<boolean>(false);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [inputValue, setInputValue] = useState("");
   const nextIdRef = useRef<number>(initialMessages[initialMessages.length - 1]?.id + 1 || 1);
@@ -29,6 +31,20 @@ export default function ChatWindow({ isMock = true }: ChatWindowProps) {
     if (!scrollRef.current) return;
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages.length]);
+
+  useEffect(() => {
+    if (seeded.current) return;
+    if (starterMessage && starterMessage.trim()) {
+      const botMessage: Message = {
+        id: nextIdRef.current++,
+        sender: "bot",
+        text: starterMessage,
+        timestamp: Date.now(),
+      };
+      setMessages([botMessage]);
+      seeded.current = true;
+    }
+  }, [starterMessage]);
 
   function handleSend(event: FormEvent) {
     event.preventDefault();
