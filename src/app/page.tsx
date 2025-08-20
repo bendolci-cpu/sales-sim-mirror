@@ -2,7 +2,7 @@ import Link from "next/link";
 
 export default function Home() {
   return (
-    <main className="min-h-screen bg-gray-50">
+    <main className="min-h-screen bg-gray-50">  
       <section className="mx-auto flex max-w-5xl flex-col items-center px-6 py-16"> 
         <h1 className="text-3xl font-semibold text-gray-900">Sales Sim</h1>
         <p className="mt-2 text-sm text-gray-600">Choose a mode to get started</p>
