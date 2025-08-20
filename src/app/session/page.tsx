@@ -1,0 +1,72 @@
+"use client";
+
+import { Suspense, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import ChatWindow from "@/components/ChatWindow";
+
+function SessionInner() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+
+  const modeLabel = useMemo(() => {
+    const raw = (searchParams.get("mode") || "practice").toLowerCase();
+    return raw === "challenge" ? "Challenge" : "Practice";
+  }, [searchParams]);
+
+  const initialIsMock = useMemo(() => {
+    const raw = (searchParams.get("mock") || "1").toLowerCase();
+    return ["1", "true", "on", "yes", "y"].includes(raw);
+  }, [searchParams]);
+
+  const [isMock, setIsMock] = useState<boolean>(initialIsMock);
+
+  return (
+    <main className="min-h-screen bg-gray-50">
+      <header className="border-b bg-white">
+        <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-4">
+          <div>
+            <h1 className="text-lg font-semibold text-gray-900">Session: {modeLabel} Mode</h1>
+            <p className="text-xs text-gray-500">Mode: {modeLabel} • Mock: {isMock ? "On" : "Off"}</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className={`text-xs ${isMock ? "text-gray-900" : "text-gray-500"}`}>Mock</span>
+            <button
+              type="button"
+              onClick={() => {
+                const nextIsMock = !isMock;
+                setIsMock(nextIsMock);
+                const params = new URLSearchParams(searchParams.toString());
+                params.set("mock", nextIsMock ? "1" : "0");
+                router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+              }}
+              className={`relative h-6 w-11 rounded-full transition ${isMock ? "bg-blue-600" : "bg-gray-300"}`}
+              aria-pressed={isMock}
+            >
+              <span
+                className={`absolute top-0.5 h-5 w-5 transform rounded-full bg-white shadow transition ${
+                  isMock ? "left-0.5 translate-x-0" : "left-0.5 translate-x-5"
+                }`}
+              />
+            </button>
+            <span className={`text-xs ${!isMock ? "text-gray-900" : "text-gray-500"}`}>Live</span>
+          </div>
+        </div>
+      </header>
+
+      <section className="mx-auto max-w-5xl px-6 py-8">
+        <ChatWindow isMock={isMock} />
+      </section>
+    </main>
+  );
+}
+
+export default function SessionPage() {
+  return (
+    <Suspense fallback={<main className="min-h-screen bg-gray-50" />}> 
+      <SessionInner />
+    </Suspense>
+  );
+}
+
+
