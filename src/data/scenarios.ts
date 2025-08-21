@@ -1,101 +1,145 @@
-export type Scenario = {
+export interface Scenario {
   id: string;
   title: string;
-  role: string;
-  industry: string;
-  description: string;
-  starter: string;
-  objectives: string[];
-  hints: string[];
-};
+  setting: string;
+  persona: string;
+  brief: string;
+  successCriteria: string[];
+  objectionBank: string[];
+  starterMessages: string[];
+}
 
-export const scenarios: Scenario[] = [
+export const SCENARIOS: Scenario[] = [
   {
-    id: "saas-renewal",
-    title: "Enterprise SaaS Renewal Negotiation",
-    role: "Account Executive",
-    industry: "SaaS / B2B",
-    description:
-      "Customer's annual contract is up for renewal. They had under-utilization in two regions and are asking for a discount. You must defend value, explore usage blockers, and land a fair multi-year renewal.",
-    starter:
-      "We're considering not renewing the full package. Our usage dropped in EMEA and LATAM, so this pricing doesn't make sense anymore.",
-    objectives: [
-      "Diagnose root cause of under-utilization",
-      "Position value relative to outcomes, not just seats",
-      "Propose options (tiering or phased ramp) to address usage concerns",
-      "Close a win-win renewal (ideally multi-year)",
+    id: "renewal-acute-care-bundle",
+    title: "Acute Care Renewal • Sani-Cloth Bundle",
+    setting: "Supply Chain + Infection Prevention (IDN Hospital)",
+    persona: "IP Director + Value Analysis",
+    brief:
+      "Annual renewal for Sani‑Cloth AF3 and Bleach Wipes across ICU/ED/OR. IP wants to standardize to one SKU; Value Analysis pushes cost per use. Ensure contact time compliance, material compatibility, and training support are covered.",
+    successCriteria: [
+      "Re‑commit to AF3 for general use and Bleach for C. diff/terminal cleans",
+      "Confirm device/material compatibility references are provided",
+      "Agree on staff education plan and compliance tracking",
     ],
-    hints: [
-      "Ask about specific teams and workflows affected",
-      "Quantify value realized in other regions",
-      "Introduce pilot expansion with success criteria",
-      "Offer terms that protect value (multi-year, ramp, or training add-on)",
+    objectionBank: [
+      "Competitor claims lower cost per wipe",
+      "Confusion about contact times across units",
+      "Facilities had dwell time residue complaints",
+    ],
+    starterMessages: [
+      "Usage is up but our budget is flat. Why not move to one cheaper wipe?",
+      "We also got residue complaints on monitors—are these compatible?",
     ],
   },
   {
-    id: "security-poc",
-    title: "Security Tooling Proof-of-Concept",
-    role: "Sales Engineer",
-    industry: "Cybersecurity",
-    description:
-      "Prospect needs to validate detection coverage with limited lab time. They will compare you to two competitors on ease-of-deployment and signal fidelity.",
-    starter:
-      "We only have two weeks to evaluate. If setup takes more than a day, we'll move on.",
-    objectives: [
-      "Clarify evaluation criteria and success metrics",
-      "Remove setup friction with a guided plan",
-      "Showcase 2-3 differentiated detections",
-      "Align sign-off process and next steps",
+    id: "cdi-outbreak-icu",
+    title: "ICU C. difficile Cluster • Sporicidal Protocol",
+    setting: "ICU",
+    persona: "ICU Nurse Manager + IP",
+    brief:
+      "Unit flagged elevated C. diff rates. You must reinforce sporicidal use (Bleach) for rooms under isolation and terminal cleans, while addressing workflow burden and odor concerns.",
+    successCriteria: [
+      "Confirm sporicidal use for isolation and terminal cleans",
+      "Clarify frequency and who owns cleaning vs disinfection",
+      "Gain buy‑in on education + audit plan (checklists/rounding)",
     ],
-    hints: [
-      "Confirm which environments are in-scope",
-      "Provide a step-by-step day 1 plan",
-      "Use real customer stories to de-risk",
-      "Schedule midpoint and final readouts",
+    objectionBank: [
+      "Bleach odor complaints and staff avoidance",
+      "Terminal clean delays during surge",
+      "Confusion on when to use general vs sporicidal wipes",
     ],
-  },
-  {
-    id: "manufacturing-crm",
-    title: "CRM Rollout for Multi-Plant Manufacturer",
-    role: "Implementation Consultant",
-    industry: "Manufacturing",
-    description:
-      "Operations wants a phased CRM rollout across three plants with unionized labor. Stakeholders are risk-averse and need clear change management.",
-    starter:
-      "We've tried CRM twice. Adoption failed on the floor. What's different this time?",
-    objectives: [
-      "Map stakeholders across plants and shifts",
-      "Co-design a pilot with frontline champions",
-      "Define adoption metrics and training plan",
-      "Set a realistic rollout timeline and governance",
-    ],
-    hints: [
-      "Ask about prior rollout pitfalls",
-      "Involve supervisors early",
-      "Show quick wins tied to safety/throughput",
-      "Propose a weekly steering cadence",
+    starterMessages: [
+      "Bleach slows us down and staff hate the smell.",
+      "Which rooms actually need Bleach? We’re not aligned.",
     ],
   },
   {
-    id: "finserv-compliance",
-    title: "FinServ Compliance Automation",
-    role: "Account Manager",
-    industry: "Financial Services",
-    description:
-      "Bank needs to automate parts of quarterly compliance reporting. Legal is concerned about audit trails; Ops needs low-touch workflows.",
-    starter:
-      "Audit wants absolute traceability. If your system can't provide that, we can't move forward.",
-    objectives: [
-      "Uncover must-have compliance requirements",
-      "Map workflows and handoffs across teams",
-      "Demonstrate audit logging and approvals",
-      "Outline a low-risk pilot scoped to one report",
+    id: "ed-turnover-high-touch",
+    title: "ED Fast Turnover • High‑Touch Compliance",
+    setting: "Emergency Department",
+    persona: "ED Charge Nurse",
+    brief:
+      "ED needs sub‑5‑minute room turnovers. Ensure high‑touch objects are consistently wiped with the correct product and contact time without bottlenecks.",
+    successCriteria: [
+      "Agree on a high‑touch checklist (bed rails, monitor controls, keyboard, chair arms, door handles)",
+      "Select fast contact‑time wipe for ED flow",
+      "Plan quick‑hit training + spot audits",
     ],
-    hints: [
-      "Mirror their control language",
-      "Bring a sample report walkthrough",
-      "Offer an auditor-facing demo mode",
-      "Clarify data retention and access controls",
+    objectionBank: [
+      "No time to watch a 2‑ or 3‑minute dwell",
+      "Nurses think EVS will get it later",
+      "Keyboard/mouse get skipped",
+    ],
+    starterMessages: [
+      "We can’t wait for dwell times during peak hours.",
+      "Our keyboards and monitors are probably getting missed.",
+    ],
+  },
+  {
+    id: "or-terminal-clean",
+    title: "OR Terminal Clean • Material Compatibility",
+    setting: "Operating Room",
+    persona: "OR Nurse Educator + Biomed",
+    brief:
+      "OR is concerned about corrosion/staining on surgical tables and monitors. Validate PDI compatibility data and align on where AF3 vs Bleach is required.",
+    successCriteria: [
+      "Map which surfaces use AF3 vs Bleach by indication",
+      "Provide manufacturer compatibility letters for monitored devices",
+      "Agree on workflow that doesn’t extend room downtime",
+    ],
+    objectionBank: [
+      "We’ve seen staining on stainless",
+      "Vendor says their device needs non‑bleach only",
+      "Turnover time is already tight",
+    ],
+    starterMessages: [
+      "Biomed flagged corrosion risk—are your wipes actually approved?",
+      "When do we *have* to use Bleach vs AF3?",
+    ],
+  },
+  {
+    id: "nicu-wipe-compat",
+    title: "NICU Equipment • Wipe Compatibility & Residue",
+    setting: "NICU",
+    persona: "NICU Manager",
+    brief:
+      "Sensitive equipment (warmers, monitors) requires compatible wipes with minimal residue. Address compatibility references and proper technique to avoid pooling.",
+    successCriteria: [
+      "Provide device compatibility references for key NICU equipment",
+      "Teach single‑direction wipe technique and drying",
+      "Set realistic re‑wipe guidance if visibly wet",
+    ],
+    objectionBank: [
+      "Residue on warmer screens",
+      "Parents complain about smell",
+      "Staff mixing glass cleaner with disinfectant",
+    ],
+    starterMessages: [
+      "Our warmer screens streak after cleaning.",
+      "Parents ask about chemical smell—what do we say?",
+    ],
+  },
+  {
+    id: "evs-audit-gap",
+    title: "EVS Rounding • Audit Gap Close",
+    setting: "Med‑Surg + EVS",
+    persona: "EVS Manager + IP",
+    brief:
+      "Recent fluorescent‑marker audits showed 62% pass on high‑touch. Build a coaching plan and standardize a wipe sequence to raise compliance.",
+    successCriteria: [
+      "Agree on 6‑item high‑touch list and sequence",
+      "Set weekly audit cadence and feedback loop",
+      "Target >85% pass within 30 days",
+    ],
+    objectionBank: [
+      "Staff turnover and float pool coverage",
+      "Night shift performance lags",
+      "Markers slow us down",
+    ],
+    starterMessages: [
+      "Audit scores dipped to 62%—we need a realistic fix.",
+      "Night shift misses the WOW keyboards.",
     ],
   },
 ];

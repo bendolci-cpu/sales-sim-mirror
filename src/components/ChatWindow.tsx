@@ -17,10 +17,10 @@ const initialMessages: Message[] = [
 
 export type ChatWindowProps = {
   isMock?: boolean;
-  starterMessage?: string;
+  seedMessages?: string[];
 };
 
-export default function ChatWindow({ isMock = true, starterMessage }: ChatWindowProps) {
+export default function ChatWindow({ isMock = true, seedMessages }: ChatWindowProps) {
   const seeded = useRef<boolean>(false);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [inputValue, setInputValue] = useState("");
@@ -33,18 +33,24 @@ export default function ChatWindow({ isMock = true, starterMessage }: ChatWindow
   }, [messages.length]);
 
   useEffect(() => {
+    if (!isMock) {
+      // Clear seeded messages when switching to live
+      seeded.current = false;
+      setMessages([]);
+      return;
+    }
     if (seeded.current) return;
-    if (starterMessage && starterMessage.trim()) {
-      const botMessage: Message = {
+    if (seedMessages && seedMessages.length > 0) {
+      const seeds: Message[] = seedMessages.map(text => ({
         id: nextIdRef.current++,
         sender: "bot",
-        text: starterMessage,
+        text,
         timestamp: Date.now(),
-      };
-      setMessages([botMessage]);
+      }));
+      setMessages(seeds);
       seeded.current = true;
     }
-  }, [starterMessage]);
+  }, [seedMessages, isMock]);
 
   function handleSend(event: FormEvent) {
     event.preventDefault();

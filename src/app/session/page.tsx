@@ -3,7 +3,8 @@
 import { Suspense, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import ChatWindow from "@/components/ChatWindow";
-import { scenarios } from "@/data/scenarios";
+import ScenarioPicker from "@/components/ScenarioPicker";
+import { SCENARIOS } from "@/data/scenarios";
 
 function SessionInner() {
   const searchParams = useSearchParams();
@@ -21,17 +22,21 @@ function SessionInner() {
   const [isMock, setIsMock] = useState<boolean>(initialIsMock);
 
   const scenarioId = searchParams.get("scenario") || "";
-  const currentScenario = scenarios.find(s => s.id === scenarioId) || null;
+  const currentScenario = SCENARIOS.find(s => s.id === scenarioId) || null;
 
   return (
     <main className="min-h-screen bg-gray-50">
       <header className="border-b bg-white">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-4">
           <div>
-            <h1 className="text-lg font-semibold text-gray-900">Session: {modeLabel} Mode</h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-lg font-semibold text-gray-900">Session: {modeLabel} Mode</h1>
+              <span className={`rounded-full px-2 py-0.5 text-[10px] ${isMock ? "bg-blue-50 text-blue-700" : "bg-gray-100 text-gray-700"}`}>
+                Mock: {isMock ? "On" : "Off"}
+              </span>
+            </div>
             <p className="text-xs text-gray-500">
-              Mode: {modeLabel} • Mock: {isMock ? "On" : "Off"}
-              {modeLabel === "Challenge" && currentScenario ? ` • Scenario: ${currentScenario.title}` : ""}
+              {modeLabel === "Challenge" && currentScenario ? `Scenario: ${currentScenario.title}` : ""}
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -63,42 +68,40 @@ function SessionInner() {
         {modeLabel === "Challenge" && (
           <div className="rounded-xl border border-gray-200 bg-white p-4">
             <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-              <div>
+              <div className="md:w-[480px]">
                 <label className="block text-xs font-medium text-gray-600">Select Scenario</label>
-                <select
-                  className="mt-1 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 md:w-[420px]"
+                <ScenarioPicker
+                  size="sm"
                   value={scenarioId}
-                  onChange={e => {
+                  onChange={(id) => {
                     const params = new URLSearchParams(searchParams.toString());
-                    if (e.target.value) params.set("scenario", e.target.value);
+                    if (id) params.set("scenario", id);
                     else params.delete("scenario");
                     router.replace(`${pathname}?${params.toString()}`, { scroll: false });
                   }}
-                >
-                  <option value="">-- Pick a scenario --</option>
-                  {scenarios.map(s => (
-                    <option key={s.id} value={s.id}>
-                      {s.title} • {s.role} • {s.industry}
-                    </option>
-                  ))}
-                </select>
+                />
               </div>
               {currentScenario && (
                 <div className="text-xs text-gray-600 md:text-right">
-                  <div className="font-medium text-gray-900">{currentScenario.title}</div>
-                  <div>
-                    {currentScenario.role} • {currentScenario.industry}
-                  </div>
+                  <div className="font-medium text-gray-900">Scenario: {currentScenario.title}</div>
+                  <div className="text-gray-600">{currentScenario.setting} • {currentScenario.persona}</div>
                 </div>
               )}
             </div>
-            {currentScenario && (
-              <p className="mt-3 text-sm text-gray-700">{currentScenario.description}</p>
+            {currentScenario ? (
+              <p className="mt-3 text-sm text-gray-700">{currentScenario.brief}</p>
+            ) : (
+              <p className="mt-3 text-sm text-gray-500">No scenario selected. Go back to the home page to pick one.</p>
             )}
+            <p className="mt-2 text-[11px] text-gray-500">Mock mode seeds the chat with the scenario’s opening messages.</p>
           </div>
         )}
 
-        <ChatWindow isMock={isMock} starterMessage={currentScenario?.starter} />
+        {currentScenario ? (
+          <ChatWindow key={`${scenarioId}-${isMock ? "mock" : "live"}`} isMock={isMock} seedMessages={isMock ? currentScenario?.starterMessages : undefined} />
+        ) : (
+          <div className="rounded-lg border border-gray-200 bg-white p-6 text-sm text-gray-600">Pick a scenario on the home page to start a session.</div>
+        )}
       </section>
     </main>
   );
