@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import ScenarioPicker from "@/components/ScenarioPicker";
 import { SCENARIOS } from "@/data/scenarios";
 import { addSession, getSessions, removeSession, clearSessions, type SavedSession } from "@/lib/sessions";
+import BudgetBadge from "@/components/BudgetBadge";
 
 export default function Home() {
   const router = useRouter();
@@ -21,8 +22,13 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-gray-50">  
       <section className="mx-auto flex max-w-5xl flex-col items-center px-6 py-16"> 
-        <h1 className="text-3xl font-semibold text-gray-900">Sales Sim</h1>
-        <p className="mt-2 text-sm text-gray-600">Choose a mode to get started</p>
+        <div className="flex w-full max-w-5xl items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-semibold text-gray-900">Sales Sim</h1>
+            <p className="mt-2 text-sm text-gray-600">Choose a mode to get started</p>
+          </div>
+          <BudgetBadge />
+        </div>
 
         <div className="mt-6 w-full max-w-3xl">
           <ScenarioPicker size="lg" value={scenarioId} onChange={setScenarioId} />

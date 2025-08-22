@@ -3,6 +3,7 @@
 import { Suspense, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import ChatWindow from "@/components/ChatWindow";
+import BudgetBadge from "@/components/BudgetBadge";
 import ScenarioPicker from "@/components/ScenarioPicker";
 import { SCENARIOS, type Scenario } from "@/data/scenarios";
 
@@ -43,10 +44,18 @@ function SessionInner() {
             </p>
           </div>
           <div className="flex items-center gap-3">
+            <BudgetBadge />
             <span className={`text-xs ${isMock ? "text-gray-900" : "text-gray-500"}`}>Mock</span>
             <button
               type="button"
-              onClick={() => {
+              onClick={async () => {
+                try {
+                  const resp = await fetch("/api/budget");
+                  const data = await resp.json();
+                  if (data && data.allowed === false) {
+                    return; // Budget cap reached; keep mock ON
+                  }
+                } catch {}
                 const nextIsMock = !isMock;
                 setIsMock(nextIsMock);
                 const params = new URLSearchParams(searchParams.toString());

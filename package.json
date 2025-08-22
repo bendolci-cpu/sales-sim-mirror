@@ -4,9 +4,11 @@
   "private": true,
   "scripts": {
     "clean": "rimraf .next node_modules && npm i",
-    "dev": "next dev",
-    "dev:clean": "npm run clean && next dev",
-    "dev:reset": "rm -rf .next .turbo node_modules/.cache 2>/dev/null || true && next dev",
+    "dev": "cross-env PORT=3000 next dev -p 3000",
+    "dev:kill": "node -e \"require('child_process').exec('lsof -ti tcp:3000,3001 | xargs -r kill -9',()=>process.exit(0))\"",
+    "dev:clean": "rm -rf .next node_modules/.cache .turbo 2>/dev/null || true",
+    "dev:reset": "npm run dev:kill && npm run dev:clean && npm run dev",
+    "health": "node scripts/health-check.js",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
@@ -24,6 +26,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "15.5.0",
+    "cross-env": "^7",
     "rimraf": "^6.0.1",
     "tailwindcss": "^4",
     "typescript": "^5"
