@@ -17,13 +17,15 @@ const initialMessages: Message[] = [
 ];
 
 export type ChatWindowProps = {
+  visible?: boolean;
   isMock?: boolean;
   seedMessages?: string[];
   voiceConnected?: boolean;
   onUserUtterance?: (text: string) => void;
 };
 
-export default function ChatWindow({ isMock = true, seedMessages, voiceConnected = false, onUserUtterance }: ChatWindowProps) {
+export default function ChatWindow({ visible = true, isMock = true, seedMessages, voiceConnected = false, onUserUtterance }: ChatWindowProps) {
+  if (!visible) return null;
   const seeded = useRef<boolean>(false);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [inputValue, setInputValue] = useState("");

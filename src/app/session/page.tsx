@@ -13,6 +13,7 @@ import CallBar from "@/components/CallBar";
 import { CallController } from "@/components/call/CallController";
 import { useSpeech } from "@/components/call/useSpeech";
 import { stop as stopTTS } from "@/components/call/tts";
+import DebugToggle from "@/components/DebugToggle";
 
 function SessionInner() {
   const searchParams = useSearchParams();
@@ -37,6 +38,15 @@ function SessionInner() {
   const historyRef = useRef<Array<{ role: "user" | "agent"; text: string }>>([]);
   const callIdRef = useRef<string>("");
   const startedAtRef = useRef<number>(0);
+  const [showChat, setShowChat] = useState<boolean>(false);
+
+  // hydrate showChat from localStorage to avoid flicker
+  useEffect(() => {
+    try {
+      const raw = typeof window !== "undefined" ? localStorage.getItem("showChatDebug") : null;
+      if (raw === "1") setShowChat(true);
+    } catch {}
+  }, []);
 
   function ensureController(): CallController {
     if (!controllerRef.current) {
@@ -158,6 +168,7 @@ function SessionInner() {
             >
               End Session
             </button>
+            <DebugToggle onChange={setShowChat} />
           </div>
         </div>
       </header>
@@ -218,6 +229,7 @@ function SessionInner() {
               isMock={isMock}
               voiceConnected={voiceConnected}
               seedMessages={isMock ? currentScenario?.starterMessages : undefined}
+              visible={showChat}
             />
           </div>
         ) : (
