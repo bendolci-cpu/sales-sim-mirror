@@ -16,11 +16,16 @@ export default function ScenarioPicker({ value, onChange, size = "sm" }: Scenari
     const q = query.trim().toLowerCase();
     if (!q || size !== "lg") return SCENARIOS;
     return SCENARIOS.filter(s =>
-      [s.id, s.title, s.persona, s.setting].some(field => field.toLowerCase().includes(q))
+      [s.id, s.title, s.persona, s.setting, s.summary, s.callPoint, s.topic]
+        .some(field => field.toLowerCase().includes(q))
     );
   }, [query, size]);
 
   const selected = useMemo(() => SCENARIOS.find(s => s.id === value), [value]);
+
+  // Debug: trace picker state
+  // eslint-disable-next-line no-console
+  console.log("[ScenarioPicker]", { size, value, query });
 
   return (
     <div className={size === "lg" ? "w-full" : "w-full max-w-xs"}>
@@ -46,13 +51,17 @@ export default function ScenarioPicker({ value, onChange, size = "sm" }: Scenari
         </option>
         {options.map(s => (
           <option key={s.id} value={s.id}>
-            {s.title} • {s.persona}
+            {s.title}
           </option>
         ))}
       </select>
 
       {size === "lg" && selected && (
-        <p className="mt-2 text-sm text-gray-700">{selected.brief}</p>
+        <div className="mt-2 text-sm">
+          <div className="text-gray-900 leading-5">{selected.title}</div>
+          <div className="text-gray-500 text-xs">Call Point: {selected.callPoint} • Topic: {selected.topic}</div>
+          <p className="mt-1 text-gray-700">{selected.brief}</p>
+        </div>
       )}
     </div>
   );

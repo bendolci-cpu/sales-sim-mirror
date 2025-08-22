@@ -24,6 +24,10 @@ function SessionInner() {
   const scenarioId = searchParams.get("scenario") || "";
   const currentScenario = SCENARIOS.find(s => s.id === scenarioId) || null;
 
+  // Debug: trace params and state
+  // eslint-disable-next-line no-console
+  console.log("[Session] params:", { modeRaw, scenarioId, isMock, currentScenarioTitle: currentScenario?.title });
+
   return (
     <main className="min-h-screen bg-gray-50">
       <header className="border-b bg-white">

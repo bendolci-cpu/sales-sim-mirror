@@ -3,6 +3,9 @@ export interface Scenario {
   title: string;
   setting: string;
   persona: string;
+  summary: string;
+  callPoint: string;
+  topic: string;
   brief: string;
   successCriteria: string[];
   objectionBank: string[];
@@ -15,6 +18,10 @@ export const SCENARIOS: Scenario[] = [
     title: "Acute Care Renewal • Sani-Cloth Bundle",
     setting: "Supply Chain + Infection Prevention (IDN Hospital)",
     persona: "IP Director + Value Analysis",
+    summary:
+      "Annual renewal discussion balancing standardization, cost per use, and compliance outcomes across ICU/ED/OR.",
+    callPoint: "IP Director",
+    topic: "Bundle renewal",
     brief:
       "Annual renewal for Sani‑Cloth AF3 and Bleach Wipes across ICU/ED/OR. IP wants to standardize to one SKU; Value Analysis pushes cost per use. Ensure contact time compliance, material compatibility, and training support are covered.",
     successCriteria: [
@@ -37,6 +44,10 @@ export const SCENARIOS: Scenario[] = [
     title: "ICU C. difficile Cluster • Sporicidal Protocol",
     setting: "ICU",
     persona: "ICU Nurse Manager + IP",
+    summary:
+      "Address elevated C. diff rates by reinforcing where/when to use sporicidal wipes and aligning the unit on workflow.",
+    callPoint: "ICU Nurse Manager",
+    topic: "Sporicidal protocol",
     brief:
       "Unit flagged elevated C. diff rates. You must reinforce sporicidal use (Bleach) for rooms under isolation and terminal cleans, while addressing workflow burden and odor concerns.",
     successCriteria: [
@@ -59,6 +70,10 @@ export const SCENARIOS: Scenario[] = [
     title: "ED Fast Turnover • High‑Touch Compliance",
     setting: "Emergency Department",
     persona: "ED Charge Nurse",
+    summary:
+      "Improve high‑touch wipe compliance under tight turnover targets using fast contact‑time products and checklists.",
+    callPoint: "ED Charge Nurse",
+    topic: "High‑touch compliance",
     brief:
       "ED needs sub‑5‑minute room turnovers. Ensure high‑touch objects are consistently wiped with the correct product and contact time without bottlenecks.",
     successCriteria: [
@@ -81,6 +96,10 @@ export const SCENARIOS: Scenario[] = [
     title: "OR Terminal Clean • Material Compatibility",
     setting: "Operating Room",
     persona: "OR Nurse Educator + Biomed",
+    summary:
+      "Align AF3 vs Bleach usage and provide compatibility proof to protect devices without adding room downtime.",
+    callPoint: "OR Nurse Educator",
+    topic: "Material compatibility",
     brief:
       "OR is concerned about corrosion/staining on surgical tables and monitors. Validate PDI compatibility data and align on where AF3 vs Bleach is required.",
     successCriteria: [
@@ -103,6 +122,10 @@ export const SCENARIOS: Scenario[] = [
     title: "NICU Equipment • Wipe Compatibility & Residue",
     setting: "NICU",
     persona: "NICU Manager",
+    summary:
+      "Ensure compatible wipes and proper technique for sensitive NICU equipment while minimizing residue and odor.",
+    callPoint: "NICU Manager",
+    topic: "Wipe compatibility",
     brief:
       "Sensitive equipment (warmers, monitors) requires compatible wipes with minimal residue. Address compatibility references and proper technique to avoid pooling.",
     successCriteria: [
@@ -125,6 +148,10 @@ export const SCENARIOS: Scenario[] = [
     title: "EVS Rounding • Audit Gap Close",
     setting: "Med‑Surg + EVS",
     persona: "EVS Manager + IP",
+    summary:
+      "Lift audit pass rates by standardizing a high‑touch sequence and implementing coaching with a weekly cadence.",
+    callPoint: "EVS Manager",
+    topic: "Audit gap close",
     brief:
       "Recent fluorescent‑marker audits showed 62% pass on high‑touch. Build a coaching plan and standardize a wipe sequence to raise compliance.",
     successCriteria: [
