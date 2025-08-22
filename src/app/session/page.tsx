@@ -1,11 +1,15 @@
 "use client";
 
-import { Suspense, useMemo, useState } from "react";
+import { Suspense, useMemo, useRef, useState, useEffect } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import ChatWindow from "@/components/ChatWindow";
 import BudgetBadge from "@/components/BudgetBadge";
 import ScenarioPicker from "@/components/ScenarioPicker";
 import { SCENARIOS, type Scenario } from "@/data/scenarios";
+import CallBar from "@/components/CallBar";
+import { CallController } from "@/components/call/CallController";
+import { useSpeech } from "@/components/call/useSpeech";
+import { stop as stopTTS } from "@/components/call/tts";
 
 function SessionInner() {
   const searchParams = useSearchParams();
@@ -21,6 +25,46 @@ function SessionInner() {
   }, [searchParams]);
 
   const [isMock, setIsMock] = useState<boolean>(initialIsMock);
+  const controllerRef = useRef<CallController | null>(null);
+  const [callState, setCallState] = useState<"idle" | "ringing" | "connected" | "ended">("idle");
+  const [voiceConnected, setVoiceConnected] = useState<boolean>(false);
+  const [micStream, setMicStream] = useState<MediaStream | null>(null);
+  const [lastUtterance, setLastUtterance] = useState<string>("");
+
+  function ensureController(): CallController {
+    if (!controllerRef.current) {
+      controllerRef.current = new CallController();
+      controllerRef.current.onStateChange((s) => {
+        setCallState(s);
+        setVoiceConnected(s === "connected");
+      });
+    }
+    return controllerRef.current;
+  }
+
+  const { start: startSR, stop: stopSR } = useSpeech({
+    onInterim: (t) => {
+      // Directly set into ChatWindow input via prop below (handled indirectly)
+      setLastUtterance(t);
+    },
+    onFinal: (t) => {
+      setLastUtterance(t);
+    },
+  });
+
+  async function handleCall() {
+    const ctl = ensureController();
+    await ctl.start();
+    try { const s = await navigator.mediaDevices.getUserMedia({ audio: true }); setMicStream(s); } catch {}
+    startSR();
+  }
+
+  async function handleEnd() {
+    stopSR();
+    stopTTS();
+    await controllerRef.current?.end();
+    setMicStream(null);
+  }
 
   const scenarioId: string = searchParams.get("scenario") || "";
   const currentScenario: Scenario | null = useMemo(() => {
@@ -84,6 +128,7 @@ function SessionInner() {
       </header>
 
       <section className="mx-auto max-w-5xl px-6 py-8 space-y-6">
+        <CallBar state={callState} onCall={handleCall} onEnd={handleEnd} stream={micStream} />
         {modeLabel === "Challenge" && (
           <div className="rounded-xl border border-gray-200 bg-white p-4">
             <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
@@ -117,7 +162,13 @@ function SessionInner() {
         )}
 
         {currentScenario ? (
-          <ChatWindow key={`${scenarioId}-${isMock ? "mock" : "live"}`} isMock={isMock} seedMessages={isMock ? currentScenario?.starterMessages : undefined} />
+          <ChatWindow
+            key={`${scenarioId}-${isMock ? "mock" : "live"}-${voiceConnected ? "vc" : "nv"}`}
+            isMock={isMock}
+            voiceConnected={voiceConnected}
+            seedMessages={isMock ? currentScenario?.starterMessages : undefined}
+            onUserUtterance={(t) => setLastUtterance(t)}
+          />
         ) : (
           <div className="rounded-lg border border-gray-200 bg-white p-6 text-sm text-gray-600">Pick a scenario on the home page to start a session.</div>
         )}

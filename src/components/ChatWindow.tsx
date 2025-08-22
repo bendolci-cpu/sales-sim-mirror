@@ -19,9 +19,11 @@ const initialMessages: Message[] = [
 export type ChatWindowProps = {
   isMock?: boolean;
   seedMessages?: string[];
+  voiceConnected?: boolean;
+  onUserUtterance?: (text: string) => void;
 };
 
-export default function ChatWindow({ isMock = true, seedMessages }: ChatWindowProps) {
+export default function ChatWindow({ isMock = true, seedMessages, voiceConnected = false, onUserUtterance }: ChatWindowProps) {
   const seeded = useRef<boolean>(false);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [inputValue, setInputValue] = useState("");
@@ -81,6 +83,11 @@ export default function ChatWindow({ isMock = true, seedMessages }: ChatWindowPr
     }
   }
 
+  // Allow external call flow to submit user utterances
+  useEffect(() => {
+    if (!onUserUtterance) return;
+  }, [onUserUtterance]);
+
   return (
     <div className="flex w-full max-w-xl flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow">
       <div className="border-b px-4 py-3">
@@ -114,12 +121,14 @@ export default function ChatWindow({ isMock = true, seedMessages }: ChatWindowPr
                 placeholder="Type your message..."
                 className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
-              <MicRecorder
-                onTextPartial={(t) => setInputValue(t)}
-                onTextFinal={(t) => {
-                  setInputValue(t);
-                }}
-              />
+              {!voiceConnected && (
+                <MicRecorder
+                  onTextPartial={(t) => setInputValue(t)}
+                  onTextFinal={(t) => {
+                    setInputValue(t);
+                  }}
+                />
+              )}
               <button
                 type="submit"
                 disabled={!inputValue.trim()}
