@@ -50,7 +50,13 @@ export default function ReviewPage() {
 
       <section className="mx-auto max-w-5xl px-6 py-8">
         <div className="space-y-3">
-          {record.turns.map((turn, idx) => (
+          {record.turns.filter((t, i, arr) => {
+            const prev = arr[i - 1];
+            if (!prev) return true;
+            const a = `${prev.role}|${(prev.text || "").trim()}`;
+            const b = `${t.role}|${(t.text || "").trim()}`;
+            return a !== b;
+          }).map((turn, idx) => (
             <div key={idx} className={`flex ${turn.role === "user" ? "justify-end" : "justify-start"}`}>
               <div className={`inline-flex max-w-[80%] items-center gap-2 rounded-2xl px-3 py-2 text-sm ${turn.role === "user" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-900"}`}>
                 <span>{turn.text}</span>

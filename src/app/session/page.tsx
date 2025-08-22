@@ -7,13 +7,13 @@ import BudgetBadge from "@/components/BudgetBadge";
 import ScenarioPicker from "@/components/ScenarioPicker";
 import { SCENARIOS, type Scenario } from "@/data/scenarios";
 import { CallMachine } from "@/lib/voice/callMachine";
-import MicRecorder from "@/components/MicRecorder";
 import { getAgentReply, speak as agentSpeak, stopSpeaking } from "@/lib/voice/mockAgent";
 import CallBar from "@/components/CallBar";
 import { CallController } from "@/components/call/CallController";
 import { useSpeech } from "@/components/call/useSpeech";
 import { stop as stopTTS } from "@/components/call/tts";
 import DebugToggle from "@/components/DebugToggle";
+import { createWebSpeech, type WebSpeechControls } from "@/lib/speech/webSpeech";
 
 function SessionInner() {
   const searchParams = useSearchParams();
@@ -39,6 +39,10 @@ function SessionInner() {
   const callIdRef = useRef<string>("");
   const startedAtRef = useRef<number>(0);
   const [showChat, setShowChat] = useState<boolean>(false);
+  const greetedRef = useRef<boolean>(false);
+  const lastHashRef = useRef<string>("");
+  const speechRef = useRef<WebSpeechControls | null>(null);
+  const [externalTurn, setExternalTurn] = useState<{ role: "user" | "bot"; text: string; timestamp?: number } | null>(null);
 
   // hydrate showChat from localStorage to avoid flicker
   useEffect(() => {
@@ -59,15 +63,19 @@ function SessionInner() {
     return controllerRef.current;
   }
 
-  const { start: startSR, stop: stopSR } = useSpeech({
-    onInterim: (t) => {
-      // Directly set into ChatWindow input via prop below (handled indirectly)
-      setLastUtterance(t);
-    },
-    onFinal: (t) => {
-      setLastUtterance(t);
-    },
-  });
+  // helper to push turns with adjacent de-dupe and reflect into ChatWindow
+  function pushTurn(role: "user" | "agent", text: string) {
+    const trimmed = (text || "").trim();
+    if (!trimmed) return;
+    const hash = `${role}|${trimmed}`;
+    if (hash === lastHashRef.current) return;
+    const last = historyRef.current[historyRef.current.length - 1];
+    const lastHash = last ? `${last.role}|${(last.text || "").trim()}` : "";
+    if (hash === lastHash) return;
+    historyRef.current.push({ role, text: trimmed });
+    lastHashRef.current = hash;
+    setExternalTurn({ role: role === "user" ? "user" : "bot", text: trimmed, timestamp: Date.now() });
+  }
 
   async function handleCall() {
     if (!isMock) return; // mock-only
@@ -78,13 +86,33 @@ function SessionInner() {
     setTimeout(() => { m.answer(); setVoiceConnected(true); }, 1200);
     startedAtRef.current = Date.now();
     callIdRef.current = crypto.randomUUID();
-    // Agent greeting once connected
+    // Agent greeting once connected (single guard)
     const unsub = m.subscribe((state) => {
       if (state === "connected") {
         unsub();
-        const greeting = currentScenario ? `Hi, this is ${currentScenario.persona}. ${currentScenario.brief.split(".")[0]}.` : "Hi, thanks for calling.";
-        historyRef.current.push({ role: "agent", text: greeting });
-        setTimeout(() => agentSpeak(greeting), 300);
+        if (!greetedRef.current) {
+          greetedRef.current = true;
+          const greeting = currentScenario ? `Hi, this is ${currentScenario.persona}. ${currentScenario.brief.split(".")[0]}.` : "Hi, thanks for calling.";
+          pushTurn("agent", greeting);
+          setTimeout(() => agentSpeak(greeting), 300);
+        }
+        // start continuous web speech
+        if (!speechRef.current) {
+          speechRef.current = createWebSpeech({
+            onFinal: (finalText) => {
+              pushTurn("user", finalText);
+              stopSpeaking();
+              if (currentScenario) {
+                const reply = getAgentReply(historyRef.current, currentScenario);
+                setTimeout(async () => {
+                  pushTurn("agent", reply);
+                  await agentSpeak(reply);
+                }, 600 + Math.floor(Math.random() * 400));
+              }
+            },
+          });
+        }
+        try { speechRef.current?.start(); } catch {}
       }
     });
   }
@@ -94,6 +122,8 @@ function SessionInner() {
     const m = machineRef.current;
     m?.end();
     setVoiceConnected(false);
+    greetedRef.current = false;
+    try { speechRef.current?.stop(); } catch {}
     // persist record
     const record = {
       id: callIdRef.current,
@@ -209,27 +239,14 @@ function SessionInner() {
 
         {currentScenario ? (
           <div className="flex flex-col items-start gap-4">
-            {isMock && (
-              <MicRecorder
-                active={voiceConnected}
-                onUserUtterance={(text) => {
-                  historyRef.current.push({ role: "user", text });
-                  stopSpeaking();
-                  const reply = getAgentReply(historyRef.current, currentScenario);
-                  setTimeout(async () => {
-                    historyRef.current.push({ role: "agent", text: reply });
-                    await agentSpeak(reply);
-                  }, 600 + Math.floor(Math.random() * 400));
-                }}
-                className="hidden" // hidden control; call flow is driven by CallBar
-              />
-            )}
             <ChatWindow
               key={`${scenarioId}-${isMock ? "mock" : "live"}-${voiceConnected ? "vc" : "nv"}`}
               isMock={isMock}
               voiceConnected={voiceConnected}
+              callActive={voiceConnected}
               seedMessages={isMock ? currentScenario?.starterMessages : undefined}
               visible={showChat}
+              externalTurn={externalTurn}
             />
           </div>
         ) : (

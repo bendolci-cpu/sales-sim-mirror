@@ -20,17 +20,20 @@ export type ChatWindowProps = {
   visible?: boolean;
   isMock?: boolean;
   seedMessages?: string[];
-  voiceConnected?: boolean;
+  voiceConnected?: boolean; // legacy
+  callActive?: boolean;
   onUserUtterance?: (text: string) => void;
+  externalTurn?: { role: "user" | "bot"; text: string; timestamp?: number } | null;
 };
 
-export default function ChatWindow({ visible = true, isMock = true, seedMessages, voiceConnected = false, onUserUtterance }: ChatWindowProps) {
+export default function ChatWindow({ visible = true, isMock = true, seedMessages, voiceConnected = false, callActive = false, onUserUtterance, externalTurn }: ChatWindowProps) {
   if (!visible) return null;
   const seeded = useRef<boolean>(false);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [inputValue, setInputValue] = useState("");
   const nextIdRef = useRef<number>(initialMessages[initialMessages.length - 1]?.id + 1 || 1);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const lastExternalHashRef = useRef<string>("");
 
   useEffect(() => {
     if (!scrollRef.current) return;
@@ -56,6 +59,28 @@ export default function ChatWindow({ visible = true, isMock = true, seedMessages
       seeded.current = true;
     }
   }, [seedMessages, isMock]);
+
+  // Append externally-driven turn (from call flow), with simple adjacent de-dupe
+  useEffect(() => {
+    if (!externalTurn) return;
+    const text = (externalTurn.text || "").trim();
+    if (!text) return;
+    const hash = `${externalTurn.role}|${text}`;
+    if (hash === lastExternalHashRef.current) return;
+    setMessages(prev => {
+      const last = prev[prev.length - 1];
+      const lastHash = last ? `${last.sender}|${(last.text || "").trim()}` : "";
+      if (lastHash === hash) return prev; // dedupe
+      const msg: Message = {
+        id: nextIdRef.current++,
+        sender: externalTurn.role === "user" ? "user" : "bot",
+        text,
+        timestamp: externalTurn.timestamp ?? Date.now(),
+      };
+      return [...prev, msg];
+    });
+    lastExternalHashRef.current = hash;
+  }, [externalTurn]);
 
   function handleSend(event: FormEvent) {
     event.preventDefault();
@@ -123,7 +148,7 @@ export default function ChatWindow({ visible = true, isMock = true, seedMessages
                 placeholder="Type your message..."
                 className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
-              {!voiceConnected && (
+              {!callActive && !voiceConnected && (
                 <MicRecorder
                   onTextPartial={(t) => setInputValue(t)}
                   onTextFinal={(t) => {
@@ -139,6 +164,9 @@ export default function ChatWindow({ visible = true, isMock = true, seedMessages
                 Send
               </button>
             </div>
+            {callActive && (
+              <p className="mt-1 pl-1 text-[11px] text-gray-500">Voice capture is on—speak naturally.</p>
+            )}
           </form>
         </>
       ) : (
