@@ -142,17 +142,42 @@ function SessionInner() {
       }
     } catch {}
     mic.stop();
-    // persist record to calls store
+    // Build minimal CallReview and persist to localStorage under "calls"
+    type AgentTurn = { role: "user" | "agent"; text: string; ts: number };
+    type CallReview = {
+      id: string;
+      scenarioId: string | null;
+      startedAt: number;
+      endedAt: number;
+      durationSec: number;
+      turns: AgentTurn[];
+      audioUrl?: string;
+      wpm?: number;
+      interruptions?: number;
+    };
+
+    const id = callIdRef.current || crypto.randomUUID();
+    const startedAt = startedAtRef.current || Date.now();
     const endedAt = Date.now();
-    const durationMs = endedAt - (startedAtRef.current || endedAt);
-    const userTurns = historyRef.current.filter(t => t.role === "user");
-    const agentTurns = historyRef.current.filter(t => t.role === "agent");
-    const userWpmAvg = userTurns.length ? Math.round(userTurns.reduce((s, t) => s + (t.wpm || 0), 0) / userTurns.length) : undefined;
-    const interruptions = historyRef.current.filter(t => t.interrupted).length;
-    const turns: CallTurn[] = historyRef.current.map(t => ({ id: crypto.randomUUID(), at: t.at, speaker: t.role, text: t.text, charCount: t.text.length, wpm: t.wpm, interrupted: t.interrupted }));
-    const meta: CallMeta = { id: callIdRef.current, scenarioId: currentScenario?.id || "", startedAt: startedAtRef.current, endedAt, durationMs, turns, stats: { userWpmAvg, interruptions, agentTurns: agentTurns.length, userTurns: userTurns.length } };
-    try { saveCall(meta); } catch {}
-    router.push("/");
+    const durationSec = Math.max(0, Math.round((endedAt - startedAt) / 1000));
+    const turnsForReview: AgentTurn[] = historyRef.current.map(t => ({ role: t.role, text: t.text, ts: startedAt + t.at }));
+    const call: CallReview = {
+      id,
+      scenarioId: currentScenario?.id ?? null,
+      startedAt,
+      endedAt,
+      durationSec,
+      turns: turnsForReview,
+      audioUrl: audioUrl || undefined,
+    };
+    try {
+      const key = "calls";
+      const list = JSON.parse(localStorage.getItem(key) || "[]") as CallReview[];
+      const dedup = list.filter(c => c.id !== call.id);
+      dedup.unshift(call);
+      localStorage.setItem(key, JSON.stringify(dedup));
+    } catch (e) { console.error("[EndCall] persist failed", e); }
+    router.push(`/review?id=${id}`);
   }
 
   const scenarioId: string = searchParams.get("scenario") || "";

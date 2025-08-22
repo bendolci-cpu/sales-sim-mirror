@@ -2,17 +2,31 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { loadCall } from "@/lib/calls/store";
-import type { CallMeta } from "@/lib/calls/types";
+// Minimal client-side review loader from localStorage("calls")
 
 export default function ReviewPage() {
   const search = useSearchParams();
   const router = useRouter();
   const id = search.get("id") || "";
-  const [record, setRecord] = useState<CallMeta | null>(null);
+  type AgentTurn = { role: "user" | "agent"; text: string; ts: number };
+  type CallReview = {
+    id: string;
+    scenarioId: string | null;
+    startedAt: number;
+    endedAt: number;
+    durationSec: number;
+    turns: AgentTurn[];
+    audioUrl?: string;
+    wpm?: number;
+    interruptions?: number;
+  };
+  const [record, setRecord] = useState<CallReview | null>(null);
 
   useEffect(() => {
-    try { setRecord(loadCall(id)); } catch { setRecord(null); }
+    try {
+      const list = JSON.parse(localStorage.getItem("calls") || "[]") as CallReview[];
+      setRecord(list.find(c => c.id === id) ?? null);
+    } catch { setRecord(null); }
   }, [id]);
 
   const meta = useMemo(() => {
@@ -43,26 +57,22 @@ export default function ReviewPage() {
       </header>
 
       <section className="mx-auto max-w-5xl px-6 py-8">
-        {record?.stats && (
-          <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-3">
-            <div className="rounded-lg border bg-white p-3">
-              <div className="text-xs text-gray-500">Pacing</div>
-              <div className="text-sm font-medium text-gray-900">{record.stats.userWpmAvg ?? "–"} wpm</div>
-              <div className="text-[11px] text-gray-500">
-                {(record.stats.userWpmAvg ?? 0) < 100 ? "Slow" : (record.stats.userWpmAvg ?? 0) > 150 ? "Fast" : "OK"}
-              </div>
-            </div>
-            <div className="rounded-lg border bg-white p-3">
-              <div className="text-xs text-gray-500">Interruptions</div>
-              <div className="text-sm font-medium text-gray-900">{record.stats.interruptions ?? 0}</div>
-              <div className="text-[11px] text-gray-500">{(record.stats.interruptions ?? 0) === 0 ? "None" : (record.stats.interruptions ?? 0) === 1 ? "Some" : "Many"}</div>
-            </div>
-            <div className="rounded-lg border bg-white p-3">
-              <div className="text-xs text-gray-500">Participation</div>
-              <div className="text-sm font-medium text-gray-900">User {record.stats.userTurns ?? 0} • Agent {record.stats.agentTurns ?? 0}</div>
-            </div>
+        <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+          <div className="rounded-lg border bg-white p-3">
+            <div className="text-xs text-gray-500">Pacing</div>
+            <div className="text-sm font-medium text-gray-900">{record?.wpm ?? "–"} wpm</div>
+            <div className="text-[11px] text-gray-500">{(record?.wpm ?? 0) < 100 ? "Slow" : (record?.wpm ?? 0) > 150 ? "Fast" : "OK"}</div>
           </div>
-        )}
+          <div className="rounded-lg border bg-white p-3">
+            <div className="text-xs text-gray-500">Interruptions</div>
+            <div className="text-sm font-medium text-gray-900">{record?.interruptions ?? 0}</div>
+            <div className="text-[11px] text-gray-500">{(record?.interruptions ?? 0) === 0 ? "None" : (record?.interruptions ?? 0) === 1 ? "Some" : "Many"}</div>
+          </div>
+          <div className="rounded-lg border bg-white p-3">
+            <div className="text-xs text-gray-500">Participation</div>
+            <div className="text-sm font-medium text-gray-900">Turns {record?.turns.length ?? 0}</div>
+          </div>
+        </div>
         <div className="mb-6 rounded-lg border bg-white p-4">
           <div className="text-sm font-medium text-gray-900">Feedback</div>
           <div className="mt-1 text-[13px] text-gray-700">
@@ -74,14 +84,14 @@ export default function ReviewPage() {
           {record.turns.filter((t, i, arr) => {
             const prev = arr[i - 1];
             if (!prev) return true;
-            const a = `${prev.speaker}|${(prev.text || "").trim()}`;
-            const b = `${t.speaker}|${(t.text || "").trim()}`;
+            const a = `${prev.role}|${(prev.text || "").trim()}`;
+            const b = `${t.role}|${(t.text || "").trim()}`;
             return a !== b;
           }).map((turn, idx) => (
-            <div key={idx} className={`flex ${turn.speaker === "user" ? "justify-end" : "justify-start"}`}>
-              <div className={`inline-flex max-w-[80%] items-center gap-2 rounded-2xl px-3 py-2 text-sm ${turn.speaker === "user" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-900"}`}>
+            <div key={idx} className={`flex ${turn.role === "user" ? "justify-end" : "justify-start"}`}>
+              <div className={`inline-flex max-w-[80%] items-center gap-2 rounded-2xl px-3 py-2 text-sm ${turn.role === "user" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-900"}`}>
                 <span>{turn.text}</span>
-                {turn.speaker === "agent" && (
+                {turn.role === "agent" && (
                   <button className="rounded-md border border-gray-300 bg-white px-2 py-1 text-[10px] text-gray-700 hover:bg-gray-50" onClick={() => speak(turn.text)}>Play</button>
                 )}
               </div>
