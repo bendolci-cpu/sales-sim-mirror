@@ -6,6 +6,9 @@ import ChatWindow from "@/components/ChatWindow";
 import BudgetBadge from "@/components/BudgetBadge";
 import ScenarioPicker from "@/components/ScenarioPicker";
 import { SCENARIOS, type Scenario } from "@/data/scenarios";
+import { CallMachine } from "@/lib/voice/callMachine";
+import MicRecorder from "@/components/MicRecorder";
+import { getAgentReply, speak as agentSpeak, stopSpeaking } from "@/lib/voice/mockAgent";
 import CallBar from "@/components/CallBar";
 import { CallController } from "@/components/call/CallController";
 import { useSpeech } from "@/components/call/useSpeech";
@@ -30,6 +33,10 @@ function SessionInner() {
   const [voiceConnected, setVoiceConnected] = useState<boolean>(false);
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
   const [lastUtterance, setLastUtterance] = useState<string>("");
+  const machineRef = useRef<CallMachine | null>(null);
+  const historyRef = useRef<Array<{ role: "user" | "agent"; text: string }>>([]);
+  const callIdRef = useRef<string>("");
+  const startedAtRef = useRef<number>(0);
 
   function ensureController(): CallController {
     if (!controllerRef.current) {
@@ -53,17 +60,45 @@ function SessionInner() {
   });
 
   async function handleCall() {
-    const ctl = ensureController();
-    await ctl.start();
-    try { const s = await navigator.mediaDevices.getUserMedia({ audio: true }); setMicStream(s); } catch {}
-    startSR();
+    if (!isMock) return; // mock-only
+    if (!machineRef.current) machineRef.current = new CallMachine();
+    const m = machineRef.current;
+    m.start();
+    setVoiceConnected(false);
+    setTimeout(() => { m.answer(); setVoiceConnected(true); }, 1200);
+    startedAtRef.current = Date.now();
+    callIdRef.current = crypto.randomUUID();
+    // Agent greeting once connected
+    const unsub = m.subscribe((state) => {
+      if (state === "connected") {
+        unsub();
+        const greeting = currentScenario ? `Hi, this is ${currentScenario.persona}. ${currentScenario.brief.split(".")[0]}.` : "Hi, thanks for calling.";
+        historyRef.current.push({ role: "agent", text: greeting });
+        setTimeout(() => agentSpeak(greeting), 300);
+      }
+    });
   }
 
   async function handleEnd() {
-    stopSR();
-    stopTTS();
-    await controllerRef.current?.end();
-    setMicStream(null);
+    stopSpeaking();
+    const m = machineRef.current;
+    m?.end();
+    setVoiceConnected(false);
+    // persist record
+    const record = {
+      id: callIdRef.current,
+      startedAt: startedAtRef.current,
+      durationMs: (machineRef.current?.getElapsedMs() ?? 0),
+      scenarioId: currentScenario?.id || "",
+      turns: historyRef.current.map((h, idx) => ({ t: idx * 1000, role: h.role, text: h.text })),
+    };
+    try {
+      const raw = localStorage.getItem("pp_calls");
+      const list = raw ? JSON.parse(raw) : [];
+      list.unshift(record);
+      localStorage.setItem("pp_calls", JSON.stringify(list.slice(0, 20)));
+    } catch {}
+    router.push(`/review?id=${record.id}`);
   }
 
   const scenarioId: string = searchParams.get("scenario") || "";
@@ -128,7 +163,7 @@ function SessionInner() {
       </header>
 
       <section className="mx-auto max-w-5xl px-6 py-8 space-y-6">
-        <CallBar state={callState} onCall={handleCall} onEnd={handleEnd} stream={micStream} />
+        <CallBar state={voiceConnected ? "connected" : "idle"} onCall={handleCall} onEnd={handleEnd} stream={micStream} />
         {modeLabel === "Challenge" && (
           <div className="rounded-xl border border-gray-200 bg-white p-4">
             <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
@@ -162,13 +197,29 @@ function SessionInner() {
         )}
 
         {currentScenario ? (
-          <ChatWindow
-            key={`${scenarioId}-${isMock ? "mock" : "live"}-${voiceConnected ? "vc" : "nv"}`}
-            isMock={isMock}
-            voiceConnected={voiceConnected}
-            seedMessages={isMock ? currentScenario?.starterMessages : undefined}
-            onUserUtterance={(t) => setLastUtterance(t)}
-          />
+          <div className="flex flex-col items-start gap-4">
+            {isMock && (
+              <MicRecorder
+                active={voiceConnected}
+                onUserUtterance={(text) => {
+                  historyRef.current.push({ role: "user", text });
+                  stopSpeaking();
+                  const reply = getAgentReply(historyRef.current, currentScenario);
+                  setTimeout(async () => {
+                    historyRef.current.push({ role: "agent", text: reply });
+                    await agentSpeak(reply);
+                  }, 600 + Math.floor(Math.random() * 400));
+                }}
+                className="hidden" // hidden control; call flow is driven by CallBar
+              />
+            )}
+            <ChatWindow
+              key={`${scenarioId}-${isMock ? "mock" : "live"}-${voiceConnected ? "vc" : "nv"}`}
+              isMock={isMock}
+              voiceConnected={voiceConnected}
+              seedMessages={isMock ? currentScenario?.starterMessages : undefined}
+            />
+          </div>
         ) : (
           <div className="rounded-lg border border-gray-200 bg-white p-6 text-sm text-gray-600">Pick a scenario on the home page to start a session.</div>
         )}

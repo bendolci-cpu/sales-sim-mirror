@@ -3,10 +3,14 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 export type MicRecorderProps = {
+  // Legacy props kept for ChatWindow inline mic usage
   onTextPartial?: (text: string) => void;
   onTextFinal?: (text: string) => void;
   disabled?: boolean;
   className?: string;
+  // New mock-call props
+  active?: boolean;
+  onUserUtterance?: (text: string, atMs: number) => void;
 };
 
 // Placeholder for future server-side Whisper integration
@@ -22,7 +26,7 @@ type SpeechRecognitionType = typeof window extends never
       SpeechRecognition?: any;
     })["SpeechRecognition"];
 
-export default function MicRecorder({ onTextPartial, onTextFinal, disabled, className }: MicRecorderProps) {
+export default function MicRecorder({ onTextPartial, onTextFinal, disabled, className, active, onUserUtterance }: MicRecorderProps) {
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -37,7 +41,7 @@ export default function MicRecorder({ onTextPartial, onTextFinal, disabled, clas
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [seconds, setSeconds] = useState<number>(0);
   const [isSupported, setIsSupported] = useState<boolean>(true);
-  const [active, setActive] = useState<boolean>(false);
+  const [isActive, setIsActive] = useState<boolean>(false);
   const partialDebounceRef = useRef<number | null>(null);
 
   // Check support on mount
@@ -123,7 +127,7 @@ export default function MicRecorder({ onTextPartial, onTextFinal, disabled, clas
 
   const stopRecognition = useCallback(() => {
     setIsRecording(false);
-    setActive(false);
+    setIsActive(false);
     const rec: any = recognitionRef.current;
     if (rec) {
       try { rec.stop(); } catch {}
@@ -162,6 +166,7 @@ export default function MicRecorder({ onTextPartial, onTextFinal, disabled, clas
     rec.onend = () => {
       const final = finalTranscript.trim();
       if (onTextFinal && final) onTextFinal(final);
+      if (onUserUtterance && final) onUserUtterance(final, Date.now());
       stopRecognition();
     };
     rec.onerror = () => {
@@ -172,7 +177,7 @@ export default function MicRecorder({ onTextPartial, onTextFinal, disabled, clas
     startedAtRef.current = Date.now();
     setSeconds(0);
     setIsRecording(true);
-    setActive(true);
+    setIsActive(true);
     rec.start();
     startAudio();
   }, [isSupported, onTextPartial, onTextFinal, startAudio, stopRecognition]);
@@ -194,6 +199,16 @@ export default function MicRecorder({ onTextPartial, onTextFinal, disabled, clas
     };
   }, [cleanupAudio]);
 
+  // Auto start/stop for call usage
+  useEffect(() => {
+    if (active) {
+      if (!isRecording) startRecognition();
+    } else {
+      if (isRecording) stopRecognition();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
+
   return (
     <div className={`relative flex items-center gap-2 ${className ?? ""}`}>
       <button
@@ -201,13 +216,13 @@ export default function MicRecorder({ onTextPartial, onTextFinal, disabled, clas
         type="button"
         onClick={() => {
           if (!isSupported || disabled) return;
-          if (active) stopRecognition(); else startRecognition();
+          if (isActive) stopRecognition(); else startRecognition();
         }}
         disabled={!isSupported || !!disabled}
-        title={isSupported ? (active ? "Click to stop" : "Click to start") : "Voice input not supported in this browser"}
+        title={isSupported ? (isActive ? "Click to stop" : "Click to start") : "Voice input not supported in this browser"}
         className={`relative inline-flex h-10 w-10 items-center justify-center rounded-full bg-white text-sky-600 ring-1 ring-gray-200 shadow-sm hover:bg-sky-50 active:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50`}
       >
-        {active && (
+        {isActive && (
           <span className="pointer-events-none absolute inset-0 -z-10 inline-flex h-full w-full animate-ping rounded-full bg-sky-200" />
         )}
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
@@ -220,10 +235,10 @@ export default function MicRecorder({ onTextPartial, onTextFinal, disabled, clas
           ref={canvasRef}
           width={36}
           height={12}
-          className={`transition-opacity ${active ? "opacity-100" : "opacity-0"}`}
+          className={`transition-opacity ${isActive ? "opacity-100" : "opacity-0"}`}
           aria-hidden
         />
-        {active && (
+        {isActive && (
           <span className="text-[11px] text-gray-500">● {seconds}s</span>
         )}
       </div>
