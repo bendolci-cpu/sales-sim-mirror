@@ -1,8 +1,5 @@
 import type { NextConfig } from "next";
 
-const nextConfig: NextConfig = {
-  swcMinify: false,
-  productionBrowserSourceMaps: true,
-};
+const nextConfig: NextConfig = {};
 
 export default nextConfig;

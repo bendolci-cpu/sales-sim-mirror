@@ -4,7 +4,7 @@ import { Suspense, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import ChatWindow from "@/components/ChatWindow";
 import ScenarioPicker from "@/components/ScenarioPicker";
-import { SCENARIOS } from "@/data/scenarios";
+import { SCENARIOS, type Scenario } from "@/data/scenarios";
 
 function SessionInner() {
   const searchParams = useSearchParams();
@@ -21,12 +21,11 @@ function SessionInner() {
 
   const [isMock, setIsMock] = useState<boolean>(initialIsMock);
 
-  const scenarioId = searchParams.get("scenario") || "";
-  const currentScenario = SCENARIOS.find(s => s.id === scenarioId) || null;
-
-  // Debug: trace params and state
-  // eslint-disable-next-line no-console
-  console.log("[Session] params:", { modeRaw, scenarioId, isMock, currentScenarioTitle: currentScenario?.title });
+  const scenarioId: string = searchParams.get("scenario") || "";
+  const currentScenario: Scenario | null = useMemo(() => {
+    const found = SCENARIOS.find((s: Scenario) => s.id === scenarioId);
+    return found ?? null;
+  }, [scenarioId]);
 
   return (
     <main className="min-h-screen bg-gray-50">
@@ -64,6 +63,13 @@ function SessionInner() {
               />
             </button>
             <span className={`text-xs ${!isMock ? "text-gray-900" : "text-gray-500"}`}>Live</span>
+            <button
+              type="button"
+              onClick={() => router.push("/")}
+              className="ml-2 rounded-md border border-gray-300 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
+            >
+              End Session
+            </button>
           </div>
         </div>
       </header>

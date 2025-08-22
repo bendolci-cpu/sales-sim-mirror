@@ -16,11 +16,7 @@ export default function Home() {
     setSessions(getSessions());
   }, []);
 
-  // Debug: log current selection
-  useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log("[Home] scenarioId:", scenarioId, "selected:", selected?.title);
-  }, [scenarioId, selected?.title]);
+  // removed debug logging
 
   return (
     <main className="min-h-screen bg-gray-50">  
@@ -35,7 +31,7 @@ export default function Home() {
               <div className="space-y-1">
                 <div className="text-sm text-gray-500">Scenario Summary:</div>
                 <div className="text-sm text-gray-900">{selected.summary}</div>
-                <div className="text-sm text-gray-500">Call Point / Meeting With:</div>
+                <div className="text-sm text-gray-500">Call Point:</div>
                 <div className="text-sm text-gray-900">{selected.callPoint}</div>
                 <div className="text-sm text-gray-500">Topic:</div>
                 <div className="text-sm text-gray-900">{selected.topic}</div>
