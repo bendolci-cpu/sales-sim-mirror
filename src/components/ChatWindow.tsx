@@ -1,6 +1,7 @@
 "use client";
 
 import React, { FormEvent, useEffect, useRef, useState } from "react";
+import MicRecorder from "@/components/MicRecorder";
 
 type Message = {
   id: number;
@@ -113,6 +114,7 @@ export default function ChatWindow({ isMock = true, seedMessages }: ChatWindowPr
                 placeholder="Type your message..."
                 className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
+              <MicRecorder onText={(t) => setInputValue(t)} />
               <button
                 type="submit"
                 disabled={!inputValue.trim()}
