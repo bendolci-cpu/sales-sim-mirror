@@ -2,6 +2,8 @@
 
 import React, { FormEvent, useEffect, useRef, useState } from "react";
 import MicRecorder from "@/components/MicRecorder";
+import { mic } from "@/lib/mic";
+import { SpeechManager } from "@/lib/voice/SpeechManager";
 
 type Message = {
   id: number;
@@ -34,6 +36,7 @@ export default function ChatWindow({ visible = true, isMock = true, seedMessages
   const nextIdRef = useRef<number>(initialMessages[initialMessages.length - 1]?.id + 1 || 1);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const lastExternalHashRef = useRef<string>("");
+  const [interim, setInterim] = useState<string>("");
 
   useEffect(() => {
     if (!scrollRef.current) return;
@@ -81,6 +84,24 @@ export default function ChatWindow({ visible = true, isMock = true, seedMessages
     });
     lastExternalHashRef.current = hash;
   }, [externalTurn]);
+
+  useEffect(() => {
+    if (!callActive) return;
+    const offRes = SpeechManager.onResult(({ interim, final }) => {
+      if (interim) setInterim(interim);
+      if (final) {
+        setInterim("");
+        // Push as user message locally (ChatWindow maintains its own debug list)
+        const userMessage: Message = { id: nextIdRef.current++, sender: "user", text: final, timestamp: Date.now() };
+        setMessages(prev => [...prev, userMessage]);
+        onUserUtterance?.(final);
+      }
+    });
+    const offStatus = SpeechManager.onStatus((s) => {
+      // no-op; could reflect status in UI if needed
+    });
+    return () => { offRes(); offStatus(); };
+  }, [callActive, onUserUtterance]);
 
   function handleSend(event: FormEvent) {
     event.preventDefault();
@@ -150,8 +171,12 @@ export default function ChatWindow({ visible = true, isMock = true, seedMessages
               />
               {!callActive && !voiceConnected && (
                 <MicRecorder
-                  onTextPartial={(t) => setInputValue(t)}
-                  onTextFinal={(t) => {
+                  onTextPartial={async (t) => {
+                    if (!mic.isActive()) { try { await mic.start(); } catch {} }
+                    setInputValue(t);
+                  }}
+                  onTextFinal={async (t) => {
+                    if (!mic.isActive()) { try { await mic.start(); } catch {} }
                     setInputValue(t);
                   }}
                 />
@@ -165,7 +190,7 @@ export default function ChatWindow({ visible = true, isMock = true, seedMessages
               </button>
             </div>
             {callActive && (
-              <p className="mt-1 pl-1 text-[11px] text-gray-500">Voice capture is on—speak naturally.</p>
+              <p className="mt-1 pl-1 text-[11px] text-gray-500">Voice capture is on—speak naturally.{interim ? ` — ${interim}` : ""}</p>
             )}
           </form>
         </>

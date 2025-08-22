@@ -2,18 +2,20 @@
 
 import { Suspense, useMemo, useRef, useState, useEffect } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import ChatWindow from "@/components/ChatWindow";
+import dynamic from "next/dynamic";
+import ClientOnly from "@/components/ClientOnly";
+const ChatWindowClient = dynamic(() => import("@/components/ChatWindow"), { ssr: false });
 import BudgetBadge from "@/components/BudgetBadge";
 import ScenarioPicker from "@/components/ScenarioPicker";
 import { SCENARIOS, type Scenario } from "@/data/scenarios";
 import { CallMachine } from "@/lib/voice/callMachine";
 import { getAgentReply, speak as agentSpeak, stopSpeaking } from "@/lib/voice/mockAgent";
 import CallBar from "@/components/CallBar";
-import { CallController } from "@/components/call/CallController";
-import { useSpeech } from "@/components/call/useSpeech";
-import { stop as stopTTS } from "@/components/call/tts";
 import DebugToggle from "@/components/DebugToggle";
 import { createWebSpeech, type WebSpeechControls } from "@/lib/speech/webSpeech";
+import { saveCall } from "@/lib/calls/store";
+import type { CallMeta, CallTurn } from "@/lib/calls/types";
+import { mic, useMicStatus } from "@/lib/mic";
 
 function SessionInner() {
   const searchParams = useSearchParams();
@@ -29,20 +31,24 @@ function SessionInner() {
   }, [searchParams]);
 
   const [isMock, setIsMock] = useState<boolean>(initialIsMock);
-  const controllerRef = useRef<CallController | null>(null);
-  const [callState, setCallState] = useState<"idle" | "ringing" | "connected" | "ended">("idle");
   const [voiceConnected, setVoiceConnected] = useState<boolean>(false);
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
-  const [lastUtterance, setLastUtterance] = useState<string>("");
   const machineRef = useRef<CallMachine | null>(null);
-  const historyRef = useRef<Array<{ role: "user" | "agent"; text: string }>>([]);
+  const historyRef = useRef<Array<{ role: "user" | "agent"; text: string; at: number; wpm?: number; interrupted?: boolean }>>([]);
   const callIdRef = useRef<string>("");
   const startedAtRef = useRef<number>(0);
+  const connectedAtRef = useRef<number>(0);
   const [showChat, setShowChat] = useState<boolean>(false);
   const greetedRef = useRef<boolean>(false);
   const lastHashRef = useRef<string>("");
   const speechRef = useRef<WebSpeechControls | null>(null);
   const [externalTurn, setExternalTurn] = useState<{ role: "user" | "bot"; text: string; timestamp?: number } | null>(null);
+  const agentSpeakingRef = useRef<boolean>(false);
+  const [isRecording, setIsRecording] = useState<boolean>(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const micStatus = useMicStatus();
 
   // hydrate showChat from localStorage to avoid flicker
   useEffect(() => {
@@ -52,19 +58,8 @@ function SessionInner() {
     } catch {}
   }, []);
 
-  function ensureController(): CallController {
-    if (!controllerRef.current) {
-      controllerRef.current = new CallController();
-      controllerRef.current.onStateChange((s) => {
-        setCallState(s);
-        setVoiceConnected(s === "connected");
-      });
-    }
-    return controllerRef.current;
-  }
-
-  // helper to push turns with adjacent de-dupe and reflect into ChatWindow
-  function pushTurn(role: "user" | "agent", text: string) {
+  // helper to push turns with adjacent de-dupe and reflect into ChatWindow + history
+  function pushTurn(role: "user" | "agent", text: string, extra?: { wpm?: number; interrupted?: boolean }) {
     const trimmed = (text || "").trim();
     if (!trimmed) return;
     const hash = `${role}|${trimmed}`;
@@ -72,7 +67,8 @@ function SessionInner() {
     const last = historyRef.current[historyRef.current.length - 1];
     const lastHash = last ? `${last.role}|${(last.text || "").trim()}` : "";
     if (hash === lastHash) return;
-    historyRef.current.push({ role, text: trimmed });
+    const at = Math.max(0, Date.now() - (connectedAtRef.current || Date.now()));
+    historyRef.current.push({ role, text: trimmed, at, wpm: extra?.wpm, interrupted: extra?.interrupted });
     lastHashRef.current = hash;
     setExternalTurn({ role: role === "user" ? "user" : "bot", text: trimmed, timestamp: Date.now() });
   }
@@ -83,9 +79,16 @@ function SessionInner() {
     const m = machineRef.current;
     m.start();
     setVoiceConnected(false);
-    setTimeout(() => { m.answer(); setVoiceConnected(true); }, 1200);
+    setTimeout(() => { m.answer(); setVoiceConnected(true); connectedAtRef.current = Date.now(); }, 1200);
     startedAtRef.current = Date.now();
     callIdRef.current = crypto.randomUUID();
+    // Start Mic singleton and begin recording
+    try {
+      const stream = await mic.start();
+      if (stream) setMicStream(stream);
+      mic.startRecording();
+      setIsRecording(true);
+    } catch (err) { console.error('Mic start failed', err); }
     // Agent greeting once connected (single guard)
     const unsub = m.subscribe((state) => {
       if (state === "connected") {
@@ -94,19 +97,26 @@ function SessionInner() {
           greetedRef.current = true;
           const greeting = currentScenario ? `Hi, this is ${currentScenario.persona}. ${currentScenario.brief.split(".")[0]}.` : "Hi, thanks for calling.";
           pushTurn("agent", greeting);
-          setTimeout(() => agentSpeak(greeting), 300);
+          agentSpeakingRef.current = true;
+          setTimeout(() => agentSpeak(greeting).then(() => { agentSpeakingRef.current = false; }), 300);
         }
         // start continuous web speech
         if (!speechRef.current) {
           speechRef.current = createWebSpeech({
             onFinal: (finalText) => {
-              pushTurn("user", finalText);
-              stopSpeaking();
+              const words = finalText.split(/\s+/).filter(Boolean).length;
+              const wpm = Math.round((words / 2) * 60); // rough fallback with 2s assumed
+              pushTurn("user", finalText, { wpm });
+              if (agentSpeakingRef.current) {
+                stopSpeaking();
+              }
               if (currentScenario) {
                 const reply = getAgentReply(historyRef.current, currentScenario);
                 setTimeout(async () => {
                   pushTurn("agent", reply);
+                  agentSpeakingRef.current = true;
                   await agentSpeak(reply);
+                  agentSpeakingRef.current = false;
                 }, 600 + Math.floor(Math.random() * 400));
               }
             },
@@ -124,21 +134,25 @@ function SessionInner() {
     setVoiceConnected(false);
     greetedRef.current = false;
     try { speechRef.current?.stop(); } catch {}
-    // persist record
-    const record = {
-      id: callIdRef.current,
-      startedAt: startedAtRef.current,
-      durationMs: (machineRef.current?.getElapsedMs() ?? 0),
-      scenarioId: currentScenario?.id || "",
-      turns: historyRef.current.map((h, idx) => ({ t: idx * 1000, role: h.role, text: h.text })),
-    };
     try {
-      const raw = localStorage.getItem("pp_calls");
-      const list = raw ? JSON.parse(raw) : [];
-      list.unshift(record);
-      localStorage.setItem("pp_calls", JSON.stringify(list.slice(0, 20)));
+      if (isRecording) {
+        const blob = await mic.stopRecording();
+        setIsRecording(false);
+        if (blob) setAudioUrl(URL.createObjectURL(blob));
+      }
     } catch {}
-    router.push(`/review?id=${record.id}`);
+    mic.stop();
+    // persist record to calls store
+    const endedAt = Date.now();
+    const durationMs = endedAt - (startedAtRef.current || endedAt);
+    const userTurns = historyRef.current.filter(t => t.role === "user");
+    const agentTurns = historyRef.current.filter(t => t.role === "agent");
+    const userWpmAvg = userTurns.length ? Math.round(userTurns.reduce((s, t) => s + (t.wpm || 0), 0) / userTurns.length) : undefined;
+    const interruptions = historyRef.current.filter(t => t.interrupted).length;
+    const turns: CallTurn[] = historyRef.current.map(t => ({ id: crypto.randomUUID(), at: t.at, speaker: t.role, text: t.text, charCount: t.text.length, wpm: t.wpm, interrupted: t.interrupted }));
+    const meta: CallMeta = { id: callIdRef.current, scenarioId: currentScenario?.id || "", startedAt: startedAtRef.current, endedAt, durationMs, turns, stats: { userWpmAvg, interruptions, agentTurns: agentTurns.length, userTurns: userTurns.length } };
+    try { saveCall(meta); } catch {}
+    router.push("/");
   }
 
   const scenarioId: string = searchParams.get("scenario") || "";
@@ -205,6 +219,7 @@ function SessionInner() {
 
       <section className="mx-auto max-w-5xl px-6 py-8 space-y-6">
         <CallBar state={voiceConnected ? "connected" : "idle"} onCall={handleCall} onEnd={handleEnd} stream={micStream} />
+        <div className="-mt-4 flex justify-end px-1 text-[11px] text-gray-500">Mic: {micStatus}</div>
         {modeLabel === "Challenge" && (
           <div className="rounded-xl border border-gray-200 bg-white p-4">
             <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
@@ -239,18 +254,25 @@ function SessionInner() {
 
         {currentScenario ? (
           <div className="flex flex-col items-start gap-4">
-            <ChatWindow
-              key={`${scenarioId}-${isMock ? "mock" : "live"}-${voiceConnected ? "vc" : "nv"}`}
-              isMock={isMock}
-              voiceConnected={voiceConnected}
-              callActive={voiceConnected}
-              seedMessages={isMock ? currentScenario?.starterMessages : undefined}
-              visible={showChat}
-              externalTurn={externalTurn}
-            />
+            <ClientOnly>
+              <ChatWindowClient
+                isMock={isMock}
+                voiceConnected={voiceConnected}
+                callActive={voiceConnected}
+                seedMessages={isMock ? currentScenario?.starterMessages : undefined}
+                visible={showChat}
+                externalTurn={externalTurn}
+              />
+            </ClientOnly>
           </div>
         ) : (
           <div className="rounded-lg border border-gray-200 bg-white p-6 text-sm text-gray-600">Pick a scenario on the home page to start a session.</div>
+        )}
+        {audioUrl && (
+          <div className="rounded-xl border border-gray-200 bg-white p-4">
+            <div className="text-xs font-medium text-gray-700">Call Audio (local)</div>
+            <audio controls src={audioUrl} className="mt-2 w-full" />
+          </div>
         )}
       </section>
     </main>

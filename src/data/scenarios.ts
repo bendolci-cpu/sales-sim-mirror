@@ -171,4 +171,9 @@ export const SCENARIOS: Scenario[] = [
   },
 ];
 
+export function getScenarioById(id: string): Scenario | null {
+  const found = SCENARIOS.find(s => s.id === id);
+  return found ?? null;
+}
+
 
