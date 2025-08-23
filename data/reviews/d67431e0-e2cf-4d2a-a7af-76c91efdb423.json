@@ -1,0 +1,21 @@
+{
+  "id": "d67431e0-e2cf-4d2a-a7af-76c91efdb423",
+  "createdAt": 1755924379295,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ED Charge Nurse. ED needs sub‑5‑minute room turnovers.",
+      "ts": 1755924370366
+    },
+    {
+      "role": "user",
+      "text": "test one two",
+      "ts": 1755924372986
+    },
+    {
+      "role": "agent",
+      "text": "Tell me more about your current process—where are the bottlenecks?",
+      "ts": 1755924374102
+    }
+  ]
+}

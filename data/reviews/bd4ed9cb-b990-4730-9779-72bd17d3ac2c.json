@@ -1,0 +1,21 @@
+{
+  "id": "bd4ed9cb-b990-4730-9779-72bd17d3ac2c",
+  "createdAt": 1755924179559,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ICU Nurse Manager + IP. Unit flagged elevated C.",
+      "ts": 1755924166304
+    },
+    {
+      "role": "user",
+      "text": "test one two",
+      "ts": 1755924176343
+    },
+    {
+      "role": "agent",
+      "text": "Can you share how your staff currently handles C. diff room turnovers?",
+      "ts": 1755924177193
+    }
+  ]
+}

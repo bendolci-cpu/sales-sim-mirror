@@ -1,0 +1,11 @@
+{
+  "id": "3f07ee9c-4615-40bb-a80b-e61a89a30646",
+  "createdAt": 1755924158163,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ICU Nurse Manager + IP. Unit flagged elevated C.",
+      "ts": 1755924156622
+    }
+  ]
+}

@@ -44,12 +44,21 @@ export async function POST(
     await ensureDir();
     const body = await req.json();
 
-    const turns = Array.isArray(body?.turns) ? body.turns : [];
-    const payload = {
-      id: params.id,
-      createdAt: body?.createdAt ?? Date.now(),
-      turns,
-    };
+    // normalize and persist url/audioUrl so the Review page can play clips
+const turns = Array.isArray(body?.turns)
+? body.turns.map((t: any) => ({
+    role: t.role,
+    text: t.text ?? "",
+    url: t.url ?? t.audioUrl ?? null,
+    audioUrl: t.audioUrl ?? t.url ?? null,
+  }))
+: [];
+
+const payload = {
+id: params.id,
+createdAt: body?.createdAt ?? Date.now(),
+turns,
+};
 
     await fs.writeFile(fileFor(params.id), JSON.stringify(payload, null, 2), "utf8");
     return NextResponse.json(payload, { headers: { "Cache-Control": "no-store" } });

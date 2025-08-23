@@ -1,9 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import mic from "@/lib/mic";
+import {mic} from "../lib/mic";
 
-export type Turn = { role: "user" | "assistant"; text: string; audioUrl?: string };
+export type Turn = {
+  role: "user" | "assistant";
+  text: string;
+  url?: string;        // optional
+  audioUrl?: string;   // optional alias
+};
 
 async function uploadAudio(blob: Blob, name: string) {
   const fd = new FormData();
@@ -30,19 +35,21 @@ export default function PlayCallButton({
 
     // 1) Start mic so you capture yourself while the assistant plays
     try {
-      await mic.startRecording("user");
+      // First ensure mic stream is active
+      await mic.start();
+      await mic.startRecording();
       console.log("[PlayCall] mic started");
     } catch (e) {
       console.warn("[PlayCall] mic start failed (continuing playback anyway)", e);
     }
 
     try {
-      // 2) Build URLs to play in order; fallback to test clips for any missing urls
       const urls = turns.map((t) =>
-        t.audioUrl ?? (t.role === "assistant" ? "/api/audio/test-ai" : "/api/audio/test-user")
+        t.url ??
+        t.url ?? // use url if audioUrl is missing
+        (t.role === "assistant" ? "/api/audio/test-ai" : "/api/audio/test-user")
       );
       console.log("[PlayCall] urls", urls);
-
       // 3) Fetch and play each clip sequentially
       for (const url of urls) {
         try {
@@ -73,8 +80,11 @@ export default function PlayCallButton({
           console.log("[PlayCall] uploaded mic url", url);
 
           // find first user turn and attach the url
-          const idx = turns.findIndex((t) => t.role === "user");
-          if (idx >= 0) turns[idx] = { ...turns[idx], audioUrl: url };
+const idx = turns.findIndex((t) => t.role === "user");
+if (idx >= 0) {
+  // write to `url` (and keep audioUrl in sync, harmless)
+  turns[idx] = { ...turns[idx], url, audioUrl: url };
+}
 
           // persist the updated turns to the review
           await fetch(`/api/reviews/${reviewId}`, {

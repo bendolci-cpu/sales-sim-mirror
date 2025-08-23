@@ -1,28 +1,57 @@
+/* src/app/api/upload-audio/route.ts */
 import { NextRequest, NextResponse } from "next/server";
-import { mkdir, writeFile } from "fs/promises";
+import { promises as fs } from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
+
+export const runtime = "nodejs";
+
+const AUDIO_DIR = path.join(process.cwd(), "data", "audio");
+
+async function ensureDir() {
+  await fs.mkdir(AUDIO_DIR, { recursive: true });
+}
+
+// pick file extension by mime (default to webm if unknown)
+function pickExt(mime: string | null | undefined) {
+  if (!mime) return "webm";
+  if (mime.includes("wav")) return "wav";
+  if (mime.includes("mpeg") || mime.includes("mp3")) return "mp3";
+  if (mime.includes("webm")) return "webm";
+  return "webm";
+}
 
 export async function POST(req: NextRequest) {
   try {
+    await ensureDir();
     const form = await req.formData();
     const file = form.get("file");
-    if (!file || !(file instanceof File)) {
-      return NextResponse.json({ error: "no file" }, { status: 400 });
+    if (!(file instanceof Blob)) {
+      return NextResponse.json({ error: "missing file" }, { status: 400 });
     }
+    const name = (form.get("name") as string) || "upload";
     const id = crypto.randomUUID();
+
+    const ext = pickExt(file.type);
     const buf = Buffer.from(await file.arrayBuffer());
-    const mime = (file as any).type || "audio/webm";
-    const ext = mime.includes("mpeg") || mime.includes("mp3") ? "mp3" : mime.includes("wav") ? "wav" : "webm";
-    const dir = path.join(process.cwd(), "data", "audio");
-    await mkdir(dir, { recursive: true });
-    // If MP3, save as mp3; otherwise save with original ext (best-effort; transcoding omitted for now)
-    const p = path.join(dir, `${id}.${ext}`);
-    await writeFile(p, buf);
-    console.log(`[UploadAudio] saved ${id}.${ext}`);
-    return NextResponse.json({ audioUrl: `/api/audio/${id}` });
-  } catch (e: any) {
-    return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
+    const abs = path.join(AUDIO_DIR, `${id}.${ext}`);
+    await fs.writeFile(abs, buf);
+
+    // Optionally remember the ext so the GET route can find it (we'll just probe on GET)
+    return NextResponse.json(
+      {
+        id,
+        name,
+        mime: file.type,
+        size: buf.length,
+        url: `/api/audio/${id}`,
+      },
+      {
+        status: 200,
+        headers: { "Cache-Control": "no-store" },
+      }
+    );
+  } catch (e) {
+    return NextResponse.json({ error: String(e) }, { status: 500 });
   }
 }
-
-
