@@ -7,6 +7,8 @@ export type WebSpeechControls = {
 type Handlers = {
   onInterim?: (text: string) => void;
   onFinal?: (text: string) => void;
+  onSpeechStart?: () => void;
+  onSpeechEnd?: () => void;
 };
 
 export function createWebSpeech(handlers: Handlers): WebSpeechControls | null {
@@ -38,6 +40,8 @@ export function createWebSpeech(handlers: Handlers): WebSpeechControls | null {
         finalBuffer = "";
       }
     };
+    rec.onspeechstart = () => { handlers.onSpeechStart?.(); };
+    rec.onspeechend = () => { handlers.onSpeechEnd?.(); };
     rec.onerror = () => {
       // soft restart unless stopped externally
     };

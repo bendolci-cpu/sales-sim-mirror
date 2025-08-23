@@ -36,6 +36,11 @@ export default function ReviewPage() {
     } catch { setRecord(null); }
   }, [id]);
 
+  useEffect(() => {
+    if (!record) return;
+    try { console.table(record.turns); } catch {}
+  }, [record]);
+
   const meta = useMemo(() => {
     if (!record) return { duration: "00:00", turns: 0 };
     const mm = String(Math.floor(record.durationSec / 60)).padStart(2, "0");
@@ -82,11 +87,7 @@ export default function ReviewPage() {
   }, [record]);
 
 
-  function speak(text: string) {
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.lang = "en-US"; window.speechSynthesis.speak(utter);
-  }
+  // removed per-bubble TTS play for assistant; keeping no-op helper unused
 
   if (!record) return <main className="mx-auto max-w-3xl p-6"><div className="rounded-lg border bg-white p-6 text-sm text-gray-700">No record found.<br/><button className="mt-4 rounded-md border px-3 py-1.5 text-xs" onClick={() => router.push("/")}>Back to Dashboard</button></div></main>;
 
@@ -111,6 +112,8 @@ export default function ReviewPage() {
         <div className="mb-6">
           <PlayCallButton turns={record.turns} />
         </div>
+        {/* Dev-only Audio Debug panel */}
+        <AudioDebug turns={record.turns} />
         <div className="mb-6 rounded-lg border bg-white p-4">
           <div className="text-sm font-medium text-gray-900">Feedback</div>
           <div className="mt-1 text-[13px] text-gray-700">
@@ -129,9 +132,7 @@ export default function ReviewPage() {
             <div key={idx} className={`flex ${turn.role === "user" ? "justify-end" : "justify-start"}`}>
               <div className={`inline-flex max-w-[80%] items-center gap-2 rounded-2xl px-3 py-2 text-sm ${turn.role === "user" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-900"}`}>
                 <span>{turn.text}</span>
-                {turn.role === "agent" && (
-                  <button className="rounded-md border border-gray-300 bg-white px-2 py-1 text-[10px] text-gray-700 hover:bg-gray-50" onClick={() => speak(turn.text)}>Play</button>
-                )}
+                {/* per-bubble play removed for assistant; could add for user if needed */}
               </div>
             </div>
           ))}
@@ -141,4 +142,69 @@ export default function ReviewPage() {
   );
 }
 
+
+function AudioDebug({ turns }: { turns: { role: string; audioUrl?: string }[] }) {
+  const [rows, setRows] = useState<Array<{ idx: number; role: string; url: string; status: number | null; contentType: string | null; contentLength: string | null; method: string; ok: boolean; error?: string }>>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function probe() {
+      const out: Array<{ idx: number; role: string; url: string; status: number | null; contentType: string | null; contentLength: string | null; method: string; ok: boolean; error?: string }> = [];
+      const urls = (turns || []).map((t, i) => ({ idx: i, role: t.role, url: t.audioUrl || "" }));
+      for (const { idx, role, url } of urls) {
+        if (!url) {
+          out.push({ idx, role, url, status: null, contentType: null, contentLength: null, method: "NONE", ok: false, error: "missing url" });
+          continue;
+        }
+        // Try HEAD first
+        try {
+          let res = await fetch(url, { method: "HEAD", credentials: "include", cache: "no-store" });
+          let methodUsed = "HEAD";
+          if (!res.ok || !res.headers) {
+            // Fallback to GET (headers only), cancel body asap
+            res = await fetch(url, { method: "GET", credentials: "include", cache: "no-store" });
+            methodUsed = "GET";
+            try { (res as any).body?.cancel?.(); } catch {}
+          }
+          const status = res.status;
+          const ct = res.headers.get("content-type");
+          const cl = res.headers.get("content-length");
+          const ok = status === 200 && (ct?.startsWith("audio/") ?? false);
+          console.log("[AudioDebug]", { idx, url, status, contentType: ct, contentLength: cl, method: methodUsed });
+          out.push({ idx, role, url, status, contentType: ct, contentLength: cl, method: methodUsed, ok });
+        } catch (e: any) {
+          console.warn("[AudioDebug] fetch error", url, e);
+          out.push({ idx, role, url, status: null, contentType: null, contentLength: null, method: "ERR", ok: false, error: String(e) });
+        }
+      }
+      if (!cancelled) setRows(out);
+    }
+    probe();
+    return () => { cancelled = true; };
+  }, [turns]);
+
+  if (!rows.length) return null;
+  return (
+    <div className="mb-6 rounded-lg border bg-white p-4">
+      <div className="mb-2 text-sm font-medium text-gray-900">Audio Debug</div>
+      <div className="space-y-1">
+        {rows.map(r => {
+          const color = !r.url ? "text-red-600" : r.ok ? "text-green-600" : r.status === 200 ? "text-yellow-600" : "text-red-600";
+          return (
+            <div key={r.idx} className={`text-xs ${color}`}>
+              <span className="font-mono mr-2">#{r.idx}</span>
+              <span className="mr-2">{r.role}</span>
+              <span className="mr-2 truncate">{r.url || "(no url)"}</span>
+              <span className="mr-2">{r.method}</span>
+              <span className="mr-2">{r.status ?? "–"}</span>
+              <span className="mr-2">{r.contentType ?? "(ct: –)"}</span>
+              <span className="mr-2">{r.contentLength ?? "(len: –)"}</span>
+              {r.error ? <span className="mr-2">{r.error}</span> : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 

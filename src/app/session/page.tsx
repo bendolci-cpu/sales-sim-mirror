@@ -34,7 +34,7 @@ function SessionInner() {
   const [voiceConnected, setVoiceConnected] = useState<boolean>(false);
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
   const machineRef = useRef<CallMachine | null>(null);
-  const historyRef = useRef<Array<{ role: "user" | "agent"; text: string; at: number; wpm?: number; interrupted?: boolean }>>([]);
+  const historyRef = useRef<Array<{ role: "user" | "agent"; text: string; at: number; wpm?: number; interrupted?: boolean; audioUrl?: string }>>([]);
   const callIdRef = useRef<string>("");
   const startedAtRef = useRef<number>(0);
   const connectedAtRef = useRef<number>(0);
@@ -59,7 +59,7 @@ function SessionInner() {
   }, []);
 
   // helper to push turns with adjacent de-dupe and reflect into ChatWindow + history
-  function pushTurn(role: "user" | "agent", text: string, extra?: { wpm?: number; interrupted?: boolean }) {
+  function pushTurn(role: "user" | "agent", text: string, extra?: { wpm?: number; interrupted?: boolean; audioUrl?: string }) {
     const trimmed = (text || "").trim();
     if (!trimmed) return;
     const hash = `${role}|${trimmed}`;
@@ -68,7 +68,7 @@ function SessionInner() {
     const lastHash = last ? `${last.role}|${(last.text || "").trim()}` : "";
     if (hash === lastHash) return;
     const at = Math.max(0, Date.now() - (connectedAtRef.current || Date.now()));
-    historyRef.current.push({ role, text: trimmed, at, wpm: extra?.wpm, interrupted: extra?.interrupted });
+    historyRef.current.push({ role, text: trimmed, at, wpm: extra?.wpm, interrupted: extra?.interrupted, audioUrl: extra?.audioUrl });
     lastHashRef.current = hash;
     setExternalTurn({ role: role === "user" ? "user" : "bot", text: trimmed, timestamp: Date.now() });
   }
@@ -103,6 +103,22 @@ function SessionInner() {
         // start continuous web speech
         if (!speechRef.current) {
           speechRef.current = createWebSpeech({
+            onSpeechStart: () => {
+              try { mic.startRecording(); } catch {}
+            },
+            onSpeechEnd: async () => {
+              try {
+                const blob = await mic.stopRecording();
+                if (blob && blob.size > 0) {
+                  const fd = new FormData();
+                  fd.append("file", new File([blob], "user.webm", { type: blob.type || "audio/webm" }));
+                  const res = await fetch("/api/upload-audio", { method: "POST", body: fd });
+                  const data = await res.json();
+                  const last = historyRef.current[historyRef.current.length - 1];
+                  if (last && last.role === "user" && data?.audioUrl) last.audioUrl = data.audioUrl;
+                }
+              } catch (e) { console.warn("upload user audio failed", e); }
+            },
             onFinal: (finalText) => {
               const words = finalText.split(/\s+/).filter(Boolean).length;
               const wpm = Math.round((words / 2) * 60); // rough fallback with 2s assumed
@@ -143,7 +159,7 @@ function SessionInner() {
     } catch {}
     mic.stop();
     // Build minimal CallReview and persist to localStorage under "calls"
-    type AgentTurn = { role: "user" | "agent"; text: string; ts: number };
+    type AgentTurn = { role: "user" | "agent"; text: string; ts: number; audioUrl?: string };
     type CallReview = {
       id: string;
       scenarioId: string | null;
@@ -160,7 +176,7 @@ function SessionInner() {
     const startedAt = startedAtRef.current || Date.now();
     const endedAt = Date.now();
     const durationSec = Math.max(0, Math.round((endedAt - startedAt) / 1000));
-    const turnsForReview: AgentTurn[] = historyRef.current.map(t => ({ role: t.role, text: t.text, ts: startedAt + t.at }));
+    const turnsForReview: AgentTurn[] = historyRef.current.map(t => ({ role: t.role, text: t.text, ts: startedAt + t.at, audioUrl: t.audioUrl }));
     const call: CallReview = {
       id,
       scenarioId: currentScenario?.id ?? null,
