@@ -49,6 +49,7 @@ function SessionInner() {
   const chunksRef = useRef<Blob[]>([]);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const micStatus = useMicStatus();
+  const pendingUserAudioRef = useRef<string | null>(null);
 
   // hydrate showChat from localStorage to avoid flicker
   useEffect(() => {
@@ -71,6 +72,31 @@ function SessionInner() {
     historyRef.current.push({ role, text: trimmed, at, wpm: extra?.wpm, interrupted: extra?.interrupted, audioUrl: extra?.audioUrl });
     lastHashRef.current = hash;
     setExternalTurn({ role: role === "user" ? "user" : "bot", text: trimmed, timestamp: Date.now() });
+  }
+
+  async function uploadBlobGetUrl(blob: Blob): Promise<string | null> {
+    try {
+      const fd = new FormData();
+      fd.append("file", new File([blob], "clip.webm", { type: blob.type || "audio/webm" }));
+      const res = await fetch("/api/upload-audio", { method: "POST", body: fd });
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data?.audioUrl || null;
+    } catch { return null; }
+  }
+
+  function synthBeepWav(seconds = 1, freq = 560): Blob {
+    const sampleRate = 44100;
+    const length = sampleRate * seconds;
+    const buffer = new ArrayBuffer(44 + length * 2);
+    const view = new DataView(buffer);
+    function w(off: number, s: string) { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); }
+    w(0,'RIFF'); view.setUint32(4, 36 + length * 2, true); w(8,'WAVE'); w(12,'fmt ');
+    view.setUint32(16,16,true); view.setUint16(20,1,true); view.setUint16(22,1,true); view.setUint32(24,sampleRate,true);
+    view.setUint32(28,sampleRate*2,true); view.setUint16(32,2,true); view.setUint16(34,16,true); w(36,'data'); view.setUint32(40,length*2,true);
+    let off = 44;
+    for (let i=0;i<length;i++){ const t=i/sampleRate; const s=Math.sin(2*Math.PI*freq*t)*0.25; view.setInt16(off, Math.floor(s*32767), true); off+=2; }
+    return new Blob([buffer], { type: 'audio/wav' });
   }
 
   async function handleCall() {
@@ -104,25 +130,27 @@ function SessionInner() {
         if (!speechRef.current) {
           speechRef.current = createWebSpeech({
             onSpeechStart: () => {
+              pendingUserAudioRef.current = null;
               try { mic.startRecording(); } catch {}
             },
             onSpeechEnd: async () => {
               try {
                 const blob = await mic.stopRecording();
                 if (blob && blob.size > 0) {
-                  const fd = new FormData();
-                  fd.append("file", new File([blob], "user.webm", { type: blob.type || "audio/webm" }));
-                  const res = await fetch("/api/upload-audio", { method: "POST", body: fd });
-                  const data = await res.json();
-                  const last = historyRef.current[historyRef.current.length - 1];
-                  if (last && last.role === "user" && data?.audioUrl) last.audioUrl = data.audioUrl;
+                  const url = await uploadBlobGetUrl(blob);
+                  // store until we push on onFinal
+                  pendingUserAudioRef.current = url;
                 }
               } catch (e) { console.warn("upload user audio failed", e); }
             },
             onFinal: (finalText) => {
               const words = finalText.split(/\s+/).filter(Boolean).length;
               const wpm = Math.round((words / 2) * 60); // rough fallback with 2s assumed
-              pushTurn("user", finalText, { wpm });
+              const pending = pendingUserAudioRef.current || undefined;
+              pushTurn("user", finalText, { wpm, audioUrl: pending });
+              console.log("[Turn]", { role: 'user', hasUrl: !!pending, url: pending?.slice(0,60) });
+              console.log("[TurnSaved]", { role: 'user', text: finalText.slice(0,30), audioUrl: pending });
+              pendingUserAudioRef.current = null;
               if (agentSpeakingRef.current) {
                 stopSpeaking();
               }
@@ -133,6 +161,17 @@ function SessionInner() {
                   agentSpeakingRef.current = true;
                   await agentSpeak(reply);
                   agentSpeakingRef.current = false;
+                  // Attach assistant audio via placeholder beep upload (replace with real TTS blob when available)
+                  try {
+                    const ablob = synthBeepWav(1, 520);
+                    const aurl = await uploadBlobGetUrl(ablob);
+                    const last = historyRef.current[historyRef.current.length - 1];
+                    if (last && last.role === 'agent' && aurl) {
+                      last.audioUrl = aurl;
+                      console.log("[Turn]", { role: 'assistant', hasUrl: true, url: aurl.slice(0,60) });
+                      console.log("[TurnSaved]", { role: 'assistant', text: (last.text || '').slice(0,30), audioUrl: aurl });
+                    }
+                  } catch {}
                 }, 600 + Math.floor(Math.random() * 400));
               }
             },
@@ -187,11 +226,14 @@ function SessionInner() {
       audioUrl: audioUrl || undefined,
     };
     try {
+      // Persist in localStorage (legacy) and also POST to file API
       const key = "calls";
       const list = JSON.parse(localStorage.getItem(key) || "[]") as CallReview[];
       const dedup = list.filter(c => c.id !== call.id);
       dedup.unshift(call);
       localStorage.setItem(key, JSON.stringify(dedup));
+      await fetch(`/api/reviews/${id}`, { method: 'POST', body: JSON.stringify(call), headers: { 'Content-Type': 'application/json' } });
+      console.log("[ReviewSaved]", call.id, call.turns.map(t => ({ role: t.role, hasUrl: !!(t as any).audioUrl })));
     } catch (e) { console.error("[EndCall] persist failed", e); }
     router.push(`/review?id=${id}`);
   }
@@ -305,6 +347,16 @@ function SessionInner() {
                 externalTurn={externalTurn}
               />
             </ClientOnly>
+            <button
+              type="button"
+              onClick={() => {
+                const last3 = historyRef.current.slice(-3).map(t => ({ role: t.role, text: (t.text||'').slice(0,30), audioUrl: t.audioUrl }));
+                console.log("[LastTurns]", last3);
+              }}
+              className="rounded-md border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50"
+            >
+              Log last turns
+            </button>
           </div>
         ) : (
           <div className="rounded-lg border border-gray-200 bg-white p-6 text-sm text-gray-600">Pick a scenario on the home page to start a session.</div>

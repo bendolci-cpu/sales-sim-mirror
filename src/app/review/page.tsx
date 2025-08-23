@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import MetricCard from "@/components/MetricCard";
 import PlayCallButton from "@/components/PlayCallButton";
-// Minimal client-side review loader from localStorage("calls")
+// Client component: do NOT export revalidate here
 
 export default function ReviewPage() {
   const search = useSearchParams();
@@ -30,10 +30,18 @@ export default function ReviewPage() {
   const [record, setRecord] = useState<CallReview | null>(null);
 
   useEffect(() => {
-    try {
-      const list = JSON.parse(localStorage.getItem("calls") || "[]") as CallReview[];
-      setRecord(list.find(c => c.id === id) ?? null);
-    } catch { setRecord(null); }
+    let cancelled = false;
+    async function load() {
+      if (!id) return;
+      try {
+        const res = await fetch(`/api/reviews/${id}`, { cache: "no-store" });
+        if (!res.ok) { setRecord(null); return; }
+        const j = await res.json();
+        if (!cancelled) setRecord(j as CallReview);
+      } catch { if (!cancelled) setRecord(null); }
+    }
+    load();
+    return () => { cancelled = true; };
   }, [id]);
 
   useEffect(() => {
@@ -112,6 +120,26 @@ export default function ReviewPage() {
         <div className="mb-6">
           <PlayCallButton turns={record.turns} />
         </div>
+        <div className="mb-6">
+          <button
+            onClick={() => {
+              setRecord(prev => {
+                if (!prev) return prev;
+                const turns = [...prev.turns];
+                // seed first user and first agent
+                const uIdx = turns.findIndex(t => t.role === "user");
+                if (uIdx >= 0) turns[uIdx] = { ...turns[uIdx], audioUrl: "/api/audio/test-user" } as any;
+                const aIdx = turns.findIndex(t => t.role === "agent");
+                if (aIdx >= 0) turns[aIdx] = { ...turns[aIdx], audioUrl: "/api/audio/test-ai" } as any;
+                const next = { ...prev, turns } as typeof prev;
+                return next;
+              });
+            }}
+            className="rounded-lg border px-3 py-2 text-sm shadow-sm hover:bg-gray-50"
+          >
+            Seed Test Audio
+          </button>
+        </div>
         {/* Dev-only Audio Debug panel */}
         <AudioDebug turns={record.turns} />
         <div className="mb-6 rounded-lg border bg-white p-4">
@@ -187,6 +215,9 @@ function AudioDebug({ turns }: { turns: { role: string; audioUrl?: string }[] })
   return (
     <div className="mb-6 rounded-lg border bg-white p-4">
       <div className="mb-2 text-sm font-medium text-gray-900">Audio Debug</div>
+      <div className="mb-2 text-xs text-gray-700">
+        URLs sample: {turns.slice(0,2).map(t => (t.audioUrl ? t.audioUrl.slice(0,60) : '(none)')).join(" | ")}
+      </div>
       <div className="space-y-1">
         {rows.map(r => {
           const color = !r.url ? "text-red-600" : r.ok ? "text-green-600" : r.status === 200 ? "text-yellow-600" : "text-red-600";
