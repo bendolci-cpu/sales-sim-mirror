@@ -1,0 +1,16 @@
+{
+  "id": "devtest",
+  "createdAt": 1755918493312,
+  "turns": [
+    {
+      "role": "user",
+      "text": "check one two",
+      "audioUrl": "/api/audio/test-user"
+    },
+    {
+      "role": "assistant",
+      "text": "roger that",
+      "audioUrl": "/api/audio/test-ai"
+    }
+  ]
+}

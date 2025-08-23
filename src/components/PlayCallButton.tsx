@@ -1,54 +1,49 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import { useState } from "react";
 
-type Turn = { role?: "user" | "assistant"; audioUrl?: string | null };
+export type Turn = { role: "user" | "assistant"; text: string; audioUrl?: string };
 
 export default function PlayCallButton({ turns }: { turns: Turn[] }) {
-  const urls = useMemo(() => (turns || []).map(t => t.audioUrl ?? "/api/audio/test-ai"), [turns]);
-  const [busy, setBusy] = useState(false);
+  const [playing, setPlaying] = useState(false);
 
-  const handlePlay = async () => {
-    if (busy || urls.length === 0) return;
-    setBusy(true);
-    console.log("[PlayCall] urls", urls);
+  async function handlePlay() {
+    if (playing) return;
+    setPlaying(true);
     try {
-      for (const u of urls) {
+      const urls = turns.map(t => t.audioUrl ?? "/api/audio/test-ai");
+      console.log("[PlayCall] urls", urls);
+
+      for (const url of urls) {
         try {
-          const res = await fetch(u, { credentials: "include", cache: "no-store" });
-          if (!res.ok) { console.warn("[PlayCall] fetch !ok", u, res.status); continue; }
-          const blob = await res.blob();
-          console.log("[PlayCall] fetched", u, "size", blob.size, "type", blob.type);
-          const obj = URL.createObjectURL(blob);
-          const audio = new Audio(obj);
-          audio.volume = 1.0;
-          audio.playbackRate = 1.0;
-          await new Promise<void>((resolve) => {
-            audio.onended = () => resolve();
-            audio.onerror = () => { console.warn("[PlayCall] audio error", u); resolve(); };
-            audio.play().catch(err => { console.warn("[PlayCall] play() reject", err); resolve(); });
-          });
-          URL.revokeObjectURL(obj);
+          const r = await fetch(url, { cache: "no-store" });
+          const blob = await r.blob();
+          console.log("[PlayCall] fetched", url, "size", blob.size, "type", blob.type);
+          if (blob.size === 0) continue;
+
+          const src = URL.createObjectURL(blob);
+          const a = new Audio(src);
+          a.volume = 1.0;
+          a.playbackRate = 1.0;
+          await a.play();
+          await new Promise(res => (a.onended = res));
+          URL.revokeObjectURL(src);
         } catch (e) {
-          console.warn("[PlayCall] skip", u, e);
+          console.error("[PlayCall] failed for", url, e);
         }
       }
     } finally {
-      setBusy(false);
+      setPlaying(false);
     }
-  };
+  }
 
   return (
     <button
       onClick={handlePlay}
-      disabled={busy || urls.length === 0}
-      title={urls.length === 0 ? "No audio attached to this review" : undefined}
-      className="rounded-lg bg-blue-600 px-4 py-2 text-white shadow hover:bg-blue-700 disabled:opacity-50"
+      disabled={playing}
+      className="px-4 py-2 bg-blue-600 text-white rounded"
     >
-      {busy ? "Playing…" : "Play Call"}
+      {playing ? "Playing..." : "Play Call"}
     </button>
   );
 }
-
-
-

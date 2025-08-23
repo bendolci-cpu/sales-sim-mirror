@@ -1,60 +1,49 @@
 import { NextRequest, NextResponse } from "next/server";
-import { loadReview, saveReview, type Review } from "@/lib/reviews";
+import fs from "node:fs";
+import path from "node:path";
 
 export const runtime = "nodejs";
 
-export async function GET(_: NextRequest, { params }: { params: { id: string } }) {
-  const r = loadReview(params.id);
-  if (!r) return NextResponse.json({ error: "not found" }, { status: 404 });
-  return NextResponse.json(r, { status: 200, headers: { "Cache-Control": "no-store" } });
+type Turn = { role: "user" | "assistant"; text: string; audioUrl?: string };
+type Review = { id: string; createdAt: number; turns: Turn[] };
+
+const ROOT = path.join(process.cwd(), "data", "reviews");
+const filePath = (id: string) => path.join(ROOT, `${id}.json`);
+
+function ensureDir() {
+  if (!fs.existsSync(ROOT)) fs.mkdirSync(ROOT, { recursive: true });
 }
-
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
-  const body = await req.json();
-  const turns = (body?.turns ?? []).filter((t: any) => t && t.role && t.text !== undefined);
-  const review: Review = { id: params.id, createdAt: Date.now(), turns };
-  saveReview(review);
-  return NextResponse.json({ ok: true, id: params.id, turns: review.turns.length });
-}
-
-import { NextRequest, NextResponse } from "next/server";
-import { readFile, writeFile, mkdir } from "fs/promises";
-import path from "node:path";
-
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
-
-function getPath(id: string) {
-  const dir = path.join(process.cwd(), "data", "reviews");
-  const p = path.join(dir, `${id}.json`);
-  return { dir, p } as const;
-}
-
-export async function GET(_req: NextRequest, context: { params: Promise<{ id: string }> }) {
-  const { id } = await context.params;
-  if (!id) return new Response("Missing id", { status: 400 });
+function loadReview(id: string): Review | null {
   try {
-    const { p } = getPath(id);
-    const buf = await readFile(p);
-    return new NextResponse(buf, { status: 200, headers: { "Content-Type": "application/json", "Cache-Control": "no-store, max-age=0" } });
+    const raw = fs.readFileSync(filePath(id), "utf8");
+    const r = JSON.parse(raw) as Review;
+    if (!Array.isArray(r.turns)) r.turns = [];
+    return r;
   } catch {
-    // Return empty review if not found
-    return NextResponse.json({ id, turns: [] }, { status: 200, headers: { "Cache-Control": "no-store, max-age=0" } });
+    return null;
   }
 }
-
-export async function POST(req: NextRequest, context: { params: Promise<{ id: string }> }) {
-  const { id } = await context.params;
-  if (!id) return new Response("Missing id", { status: 400 });
-  try {
-    const body = await req.text();
-    const { dir, p } = getPath(id);
-    await mkdir(dir, { recursive: true });
-    await writeFile(p, Buffer.from(body));
-    return NextResponse.json({ ok: true, id });
-  } catch (e: any) {
-    return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
-  }
+function saveReview(r: Review) {
+  ensureDir();
+  fs.writeFileSync(filePath(r.id), JSON.stringify(r, null, 2), "utf8");
 }
 
+export async function GET(_req: NextRequest, ctx: { params: { id: string } }) {
+  const r = loadReview(ctx.params.id);
+  if (!r) return NextResponse.json({ error: "not found" }, { status: 404 });
+  return NextResponse.json(r, { headers: { "Cache-Control": "no-store" } });
+}
 
+export async function POST(req: NextRequest, ctx: { params: { id: string } }) {
+  let body: any;
+  try { body = await req.json(); } catch { body = {}; }
+
+  const turns = Array.isArray(body?.turns)
+    ? body.turns.filter((t: any) => t?.role && "text" in t)
+    : [];
+
+  const review: Review = { id: ctx.params.id, createdAt: Date.now(), turns };
+  saveReview(review);
+
+  return NextResponse.json({ ok: true, id: review.id, turns: review.turns.length });
+}
