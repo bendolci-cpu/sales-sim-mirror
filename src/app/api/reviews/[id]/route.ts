@@ -1,49 +1,49 @@
+// src/app/api/reviews/[id]/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import fs from "node:fs";
+import { promises as fs } from "node:fs";
 import path from "node:path";
 
 export const runtime = "nodejs";
 
-type Turn = { role: "user" | "assistant"; text: string; audioUrl?: string };
-type Review = { id: string; createdAt: number; turns: Turn[] };
-
 const ROOT = path.join(process.cwd(), "data", "reviews");
-const filePath = (id: string) => path.join(ROOT, `${id}.json`);
+const fileFor = (id: string) => path.join(ROOT, `${id}.json`);
 
-function ensureDir() {
-  if (!fs.existsSync(ROOT)) fs.mkdirSync(ROOT, { recursive: true });
+async function ensureDir() {
+  await fs.mkdir(ROOT, { recursive: true });
 }
-function loadReview(id: string): Review | null {
+
+export async function GET(
+  _req: NextRequest,
+  { params }: { params: { id: string } }
+) {
   try {
-    const raw = fs.readFileSync(filePath(id), "utf8");
-    const r = JSON.parse(raw) as Review;
-    if (!Array.isArray(r.turns)) r.turns = [];
-    return r;
+    await ensureDir();
+    const txt = await fs.readFile(fileFor(params.id), "utf8");
+    const json = JSON.parse(txt);
+    return NextResponse.json(json, { headers: { "Cache-Control": "no-store" } });
   } catch {
-    return null;
+    return NextResponse.json({ error: "not found" }, { status: 404, headers: { "Cache-Control": "no-store" } });
   }
 }
-function saveReview(r: Review) {
-  ensureDir();
-  fs.writeFileSync(filePath(r.id), JSON.stringify(r, null, 2), "utf8");
-}
 
-export async function GET(_req: NextRequest, ctx: { params: { id: string } }) {
-  const r = loadReview(ctx.params.id);
-  if (!r) return NextResponse.json({ error: "not found" }, { status: 404 });
-  return NextResponse.json(r, { headers: { "Cache-Control": "no-store" } });
-}
+export async function POST(
+  req: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    await ensureDir();
+    const body = await req.json();
 
-export async function POST(req: NextRequest, ctx: { params: { id: string } }) {
-  let body: any;
-  try { body = await req.json(); } catch { body = {}; }
+    const turns = Array.isArray(body.turns) ? body.turns : [];
+    const payload = {
+      id: params.id,
+      createdAt: body.createdAt ?? Date.now(),
+      turns,
+    };
 
-  const turns = Array.isArray(body?.turns)
-    ? body.turns.filter((t: any) => t?.role && "text" in t)
-    : [];
-
-  const review: Review = { id: ctx.params.id, createdAt: Date.now(), turns };
-  saveReview(review);
-
-  return NextResponse.json({ ok: true, id: review.id, turns: review.turns.length });
+    await fs.writeFile(fileFor(params.id), JSON.stringify(payload, null, 2), "utf8");
+    return NextResponse.json(payload, { status: 201, headers: { "Cache-Control": "no-store" } });
+  } catch (err) {
+    return NextResponse.json({ error: String(err) }, { status: 500, headers: { "Cache-Control": "no-store" } });
+  }
 }
