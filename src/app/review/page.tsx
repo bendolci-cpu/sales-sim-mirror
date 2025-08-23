@@ -2,6 +2,7 @@
 export const dynamic = "force-dynamic"; // always fetch fresh
 
 import Link from "next/link";
+import PlayCallButton from "@/components/PlayCallButton";
 
 /** ----- Types ----- */
 type Turn = {
@@ -144,8 +145,8 @@ export default async function ReviewPage({
         </div>
       )}
 
-      {/* Controls row (optional): place your PlayCall button here if you have one */}
-      {/* <PlayCallButton turns={turns} /> */}
+  {/* Controls row */} 
+  <PlayCallButton turns={turns} />
 
       {/* Transcript */}
       <h2 className="uppercase tracking-wide text-slate-400 text-xs">Transcript</h2>

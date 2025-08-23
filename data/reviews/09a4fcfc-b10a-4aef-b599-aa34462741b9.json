@@ -1,0 +1,16 @@
+{
+  "id": "09a4fcfc-b10a-4aef-b599-aa34462741b9",
+  "createdAt": 1755922787289,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is IP Director + Value Analysis. Annual renewal for Sani‑Cloth AF3 and Bleach Wipes across ICU/ED/OR.",
+      "ts": 1755922780673
+    },
+    {
+      "role": "user",
+      "text": "test one two test",
+      "ts": 1755922784282
+    }
+  ]
+}
