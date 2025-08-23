@@ -1,90 +1,98 @@
-import { NextRequest } from "next/server";
+// app/api/audio/[id]/route.ts
+import { NextRequest, NextResponse } from "next/server";
 import fs from "node:fs";
 import path from "node:path";
 
-function resolveAudioPath(id: string) {
-  const base = path.join(process.cwd(), "data", "audio", id);
-  const mp3 = `${base}.mp3`;
-  const wav = `${base}.wav`;
-  if (fs.existsSync(mp3)) return { file: mp3, type: "audio/mpeg" } as const;
-  if (fs.existsSync(wav)) return { file: wav, type: "audio/wav" } as const;
-  return null;
+export const runtime = "nodejs";
+
+function audioMp3Path(id: string) {
+  return path.join(process.cwd(), "data", "audio", `${id}.mp3`);
 }
 
-function ensureDir(p: string) {
-  try { fs.mkdirSync(p, { recursive: true }); } catch {}
-}
-
-// Generate a 1-second sine WAV for test ids if missing
-function maybeGenerateTestWav(id: string) {
-  if (id !== "test-user" && id !== "test-ai") return null;
-  const dir = path.join(process.cwd(), "data", "audio");
-  ensureDir(dir);
-  const file = path.join(dir, `${id}.wav`);
-  if (fs.existsSync(file)) return { file, type: "audio/wav" } as const;
+// Generate a 1s 440Hz WAV (16-bit PCM, 44.1kHz)
+function generateTestWav(durationSec = 1, freq = 440): Buffer {
   const sampleRate = 44100;
-  const durationSec = 1;
-  const length = sampleRate * durationSec;
-  const freq = id === "test-user" ? 440 : 660;
-  const buffer = Buffer.alloc(44 + length * 2);
-  // WAV header (PCM 16-bit mono)
-  buffer.write("RIFF", 0);
-  buffer.writeUInt32LE(36 + length * 2, 4);
-  buffer.write("WAVE", 8);
-  buffer.write("fmt ", 12);
-  buffer.writeUInt32LE(16, 16); // PCM chunk size
-  buffer.writeUInt16LE(1, 20); // audio format PCM
-  buffer.writeUInt16LE(1, 22); // channels
-  buffer.writeUInt32LE(sampleRate, 24);
-  buffer.writeUInt32LE(sampleRate * 2, 28); // byte rate
-  buffer.writeUInt16LE(2, 32); // block align
-  buffer.writeUInt16LE(16, 34); // bits per sample
-  buffer.write("data", 36);
-  buffer.writeUInt32LE(length * 2, 40);
-  for (let i = 0; i < length; i++) {
+  const numSamples = Math.floor(durationSec * sampleRate);
+  const numChannels = 1;
+  const bitsPerSample = 16;
+  const blockAlign = (numChannels * bitsPerSample) / 8;
+  const byteRate = sampleRate * blockAlign;
+  const dataSize = numSamples * blockAlign;
+  const riffSize = 36 + dataSize;
+
+  const buffer = Buffer.alloc(44 + dataSize);
+  let o = 0;
+  // RIFF header
+  buffer.write("RIFF", o); o += 4;
+  buffer.writeUInt32LE(riffSize, o); o += 4;
+  buffer.write("WAVE", o); o += 4;
+  // fmt  chunk
+  buffer.write("fmt ", o); o += 4;
+  buffer.writeUInt32LE(16, o); o += 4;                 // PCM chunk size
+  buffer.writeUInt16LE(1, o); o += 2;                  // PCM
+  buffer.writeUInt16LE(numChannels, o); o += 2;
+  buffer.writeUInt32LE(sampleRate, o); o += 4;
+  buffer.writeUInt32LE(byteRate, o); o += 4;
+  buffer.writeUInt16LE(blockAlign, o); o += 2;
+  buffer.writeUInt16LE(bitsPerSample, o); o += 2;
+  // data chunk
+  buffer.write("data", o); o += 4;
+  buffer.writeUInt32LE(dataSize, o); o += 4;
+
+  // Samples
+  const amp = 0.3 * 0x7fff;
+  for (let i = 0; i < numSamples; i++) {
     const t = i / sampleRate;
     const s = Math.sin(2 * Math.PI * freq * t);
-    const sample = Math.max(-1, Math.min(1, s)) * 0.3; // reduce volume
-    buffer.writeInt16LE(Math.floor(sample * 32767), 44 + i * 2);
+    buffer.writeInt16LE(Math.max(-32768, Math.min(32767, Math.floor(amp * s))), 44 + i * 2);
   }
-  fs.writeFileSync(file, buffer);
-  return { file, type: "audio/wav" } as const;
+  return buffer;
 }
 
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
-  const { id } = params;
-  let resolved = resolveAudioPath(id);
-  if (!resolved) {
-    const maybe = maybeGenerateTestWav(id);
-    if (maybe) resolved = maybe;
-  }
-  if (!resolved) {
-    return new Response("Not found", { status: 404 });
-  }
-  const stat = fs.statSync(resolved.file);
-  const fileSize = stat.size;
+  const filePath = audioMp3Path(params.id);
 
-  const range = req.headers.get("range");
-  const headers: Record<string, string> = {
-    "Content-Type": resolved.type,
-    "Accept-Ranges": "bytes",
-    "Cache-Control": "private, max-age=0, must-revalidate",
-  };
-
-  if (range) {
-    const match = /bytes=(\d+)-(\d+)?/.exec(range);
-    const start = match ? parseInt(match[1], 10) : 0;
-    const end = match && match[2] ? parseInt(match[2], 10) : fileSize - 1;
-    const chunkSize = end - start + 1;
-    headers["Content-Range"] = `bytes ${start}-${end}/${fileSize}`;
-    headers["Content-Length"] = String(chunkSize);
-    const stream = fs.createReadStream(resolved.file, { start, end });
-    return new Response(stream as unknown as ReadableStream, { status: 206, headers });
+  if (fs.existsSync(filePath)) {
+    // Serve existing MP3 (supports Range)
+    const stat = fs.statSync(filePath);
+    const range = req.headers.get("range");
+    if (range) {
+      const m = /bytes=(\d*)-(\d*)/.exec(range);
+      const start = m?.[1] ? parseInt(m[1], 10) : 0;
+      const end = m?.[2] ? parseInt(m[2], 10) : stat.size - 1;
+      const chunk = fs.createReadStream(filePath, { start, end });
+      return new NextResponse(chunk as any, {
+        status: 206,
+        headers: {
+          "Content-Range": `bytes ${start}-${end}/${stat.size}`,
+          "Accept-Ranges": "bytes",
+          "Content-Length": String(end - start + 1),
+          "Content-Type": "audio/mpeg",
+          "Cache-Control": "no-store",
+        },
+      });
+    }
+    const stream = fs.createReadStream(filePath);
+    return new NextResponse(stream as any, {
+      status: 200,
+      headers: {
+        "Content-Length": String(stat.size),
+        "Content-Type": "audio/mpeg",
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "no-store",
+      },
+    });
   }
 
-  headers["Content-Length"] = String(fileSize);
-  const stream = fs.createReadStream(resolved.file);
-  return new Response(stream as unknown as ReadableStream, { status: 200, headers });
+  // Fallback: return a valid 1s WAV tone (works in any browser)
+  const wav = generateTestWav(1, 440);
+  return new NextResponse(wav, {
+    status: 200,
+    headers: {
+      "Content-Type": "audio/wav",
+      "Content-Length": String(wav.length),
+      "Accept-Ranges": "bytes",
+      "Cache-Control": "no-store",
+    },
+  });
 }
-
-

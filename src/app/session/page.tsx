@@ -148,8 +148,7 @@ function SessionInner() {
               const wpm = Math.round((words / 2) * 60); // rough fallback with 2s assumed
               const pending = pendingUserAudioRef.current || undefined;
               pushTurn("user", finalText, { wpm, audioUrl: pending });
-              console.log("[Turn]", { role: 'user', hasUrl: !!pending, url: pending?.slice(0,60) });
-              console.log("[TurnSaved]", { role: 'user', text: finalText.slice(0,30), audioUrl: pending });
+              console.log("[Turn:user]", { text: finalText.slice(0,40), audioUrl: pending });
               pendingUserAudioRef.current = null;
               if (agentSpeakingRef.current) {
                 stopSpeaking();
@@ -157,21 +156,20 @@ function SessionInner() {
               if (currentScenario) {
                 const reply = getAgentReply(historyRef.current, currentScenario);
                 setTimeout(async () => {
-                  pushTurn("agent", reply);
+                  // Real TTS pipeline: call /api/tts, upload, then attach URL
+                  let aurl: string | null = null;
+                  try {
+                    const r = await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: reply, voice: "default" }) });
+                    if (r.ok) {
+                      const ttsBlob = await r.blob();
+                      aurl = await uploadBlobGetUrl(ttsBlob);
+                    }
+                  } catch {}
+                  pushTurn("agent", reply, { audioUrl: aurl || undefined });
+                  console.log("[Turn:assistant]", { text: reply.slice(0,40), audioUrl: aurl });
                   agentSpeakingRef.current = true;
                   await agentSpeak(reply);
                   agentSpeakingRef.current = false;
-                  // Attach assistant audio via placeholder beep upload (replace with real TTS blob when available)
-                  try {
-                    const ablob = synthBeepWav(1, 520);
-                    const aurl = await uploadBlobGetUrl(ablob);
-                    const last = historyRef.current[historyRef.current.length - 1];
-                    if (last && last.role === 'agent' && aurl) {
-                      last.audioUrl = aurl;
-                      console.log("[Turn]", { role: 'assistant', hasUrl: true, url: aurl.slice(0,60) });
-                      console.log("[TurnSaved]", { role: 'assistant', text: (last.text || '').slice(0,30), audioUrl: aurl });
-                    }
-                  } catch {}
                 }, 600 + Math.floor(Math.random() * 400));
               }
             },
