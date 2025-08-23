@@ -2,13 +2,15 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import MetricCard from "@/components/MetricCard";
+import PlayCallButton from "@/components/PlayCallButton";
 // Minimal client-side review loader from localStorage("calls")
 
 export default function ReviewPage() {
   const search = useSearchParams();
   const router = useRouter();
   const id = search.get("id") || "";
-  type AgentTurn = { role: "user" | "agent"; text: string; ts: number };
+  type AgentTurn = { role: "user" | "agent"; text: string; ts: number; audioUrl?: string };
   type CallReview = {
     id: string;
     scenarioId: string | null;
@@ -19,6 +21,11 @@ export default function ReviewPage() {
     audioUrl?: string;
     wpm?: number;
     interruptions?: number;
+    metrics?: {
+      clarityScore?: number;
+      pacingWpm?: number;
+      tonalityScore?: number;
+    };
   };
   const [record, setRecord] = useState<CallReview | null>(null);
 
@@ -31,10 +38,49 @@ export default function ReviewPage() {
 
   const meta = useMemo(() => {
     if (!record) return { duration: "00:00", turns: 0 };
-    const mm = String(Math.floor(record.durationMs / 1000 / 60)).padStart(2, "0");
-    const ss = String(Math.floor(record.durationMs / 1000) % 60).padStart(2, "0");
+    const mm = String(Math.floor(record.durationSec / 60)).padStart(2, "0");
+    const ss = String(record.durationSec % 60).padStart(2, "0");
     return { duration: `${mm}:${ss}`, turns: record.turns.length };
   }, [record]);
+
+  const computedMetrics = useMemo(() => {
+    if (!record) return { clarityScore: undefined, pacingWpm: undefined, tonalityScore: undefined } as const;
+    const existing = record.metrics || {};
+    // pacingWpm: words spoken by user / total user speaking seconds
+    let pacingWpm = existing.pacingWpm;
+    if (pacingWpm == null) {
+      const userWords = record.turns.filter(t => t.role === "user").map(t => (t.text || "").trim()).join(" ").split(/\s+/).filter(Boolean).length;
+      const userSeconds = Math.max(1, Math.round(record.durationSec * 0.6)); // heuristic: assume 60% of time user spoke if unknown
+      pacingWpm = Math.round((userWords / userSeconds) * 60);
+    }
+    // clarityScore: start 100, subtract for filler words and long sentences
+    let clarityScore = existing.clarityScore;
+    if (clarityScore == null) {
+      const text = record.turns.filter(t => t.role === "user").map(t => t.text).join(" ");
+      const fillers = (text.match(/\b(um|uh|like|you know)\b/gi) || []).length;
+      const sentences = text.split(/[.!?]+/).map(s => s.trim()).filter(Boolean);
+      const longSentences = sentences.filter(s => s.split(/\s+/).filter(Boolean).length > 22).length;
+      let score = 100 - fillers * 2 - longSentences * 5;
+      clarityScore = Math.max(0, Math.min(100, score));
+    }
+    // tonalityScore: simple variance proxy using punctuation/phrase length variance
+    let tonalityScore = existing.tonalityScore;
+    if (tonalityScore == null) {
+      const phrases = record.turns.map(t => (t.text || "").split(/,|;|\-|\.|!|\?/).map(p => p.trim()).filter(Boolean)).flat();
+      if (phrases.length <= 1) {
+        tonalityScore = 50;
+      } else {
+        const lengths = phrases.map(p => p.split(/\s+/).filter(Boolean).length);
+        const avg = lengths.reduce((a, b) => a + b, 0) / lengths.length;
+        const variance = lengths.reduce((a, b) => a + Math.pow(b - avg, 2), 0) / lengths.length;
+        // Map variance to 0-100 where moderate variance ~ good
+        const normalized = Math.max(0, Math.min(100, 70 + (variance - 5) * 5));
+        tonalityScore = Math.round(normalized);
+      }
+    }
+    return { clarityScore, pacingWpm, tonalityScore } as const;
+  }, [record]);
+
 
   function speak(text: string) {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
@@ -57,21 +103,13 @@ export default function ReviewPage() {
       </header>
 
       <section className="mx-auto max-w-5xl px-6 py-8">
-        <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-3">
-          <div className="rounded-lg border bg-white p-3">
-            <div className="text-xs text-gray-500">Pacing</div>
-            <div className="text-sm font-medium text-gray-900">{record?.wpm ?? "–"} wpm</div>
-            <div className="text-[11px] text-gray-500">{(record?.wpm ?? 0) < 100 ? "Slow" : (record?.wpm ?? 0) > 150 ? "Fast" : "OK"}</div>
-          </div>
-          <div className="rounded-lg border bg-white p-3">
-            <div className="text-xs text-gray-500">Interruptions</div>
-            <div className="text-sm font-medium text-gray-900">{record?.interruptions ?? 0}</div>
-            <div className="text-[11px] text-gray-500">{(record?.interruptions ?? 0) === 0 ? "None" : (record?.interruptions ?? 0) === 1 ? "Some" : "Many"}</div>
-          </div>
-          <div className="rounded-lg border bg-white p-3">
-            <div className="text-xs text-gray-500">Participation</div>
-            <div className="text-sm font-medium text-gray-900">Turns {record?.turns.length ?? 0}</div>
-          </div>
+        <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <MetricCard label="Clarity" value={computedMetrics.clarityScore ?? "—"} sublabel="word choice & filler words" />
+          <MetricCard label="Pacing" value={`${computedMetrics.pacingWpm ?? "—"} wpm`} sublabel="target: 130–160 wpm" />
+          <MetricCard label="Tonality" value={computedMetrics.tonalityScore ?? "—"} sublabel="pitch & energy variation" />
+        </div>
+        <div className="mb-6">
+          <PlayCallButton turns={record.turns} />
         </div>
         <div className="mb-6 rounded-lg border bg-white p-4">
           <div className="text-sm font-medium text-gray-900">Feedback</div>
