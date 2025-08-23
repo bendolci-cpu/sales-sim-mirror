@@ -1,0 +1,22 @@
+{
+  "id": "0dd1690e-c581-4e2e-9995-f8286825ec32",
+  "createdAt": 1755919991018,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ICU Nurse Manager + IP. Unit flagged elevated C.",
+      "ts": 1755919980605
+    },
+    {
+      "role": "user",
+      "text": "test one two test test",
+      "ts": 1755919984920
+    },
+    {
+      "role": "agent",
+      "text": "We’ve seen strong outcomes when teams adopt a consistent sporicidal protocol.",
+      "ts": 1755919985920,
+      "audioUrl": "/api/audio/06e12342-c23b-4424-816d-4b7bbd7556b0"
+    }
+  ]
+}

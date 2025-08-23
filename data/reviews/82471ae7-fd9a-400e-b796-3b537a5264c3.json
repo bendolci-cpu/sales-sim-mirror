@@ -1,0 +1,31 @@
+{
+  "id": "82471ae7-fd9a-400e-b796-3b537a5264c3",
+  "createdAt": 1755919628523,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ICU Nurse Manager + IP. Unit flagged elevated C.",
+      "ts": 1755919617713
+    },
+    {
+      "role": "user",
+      "text": "test one two test one two",
+      "ts": 1755919622206
+    },
+    {
+      "role": "agent",
+      "text": "We’ve seen strong outcomes when teams adopt a consistent sporicidal protocol.",
+      "ts": 1755919623025
+    },
+    {
+      "role": "user",
+      "text": "hello",
+      "ts": 1755919625018
+    },
+    {
+      "role": "agent",
+      "text": "Can you share how your staff currently handles C. diff room turnovers?",
+      "ts": 1755919625904
+    }
+  ]
+}
