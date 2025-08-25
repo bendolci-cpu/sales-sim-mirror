@@ -43,65 +43,73 @@ export default function PlayCallButton({
       console.warn("[PlayCall] mic start failed (continuing playback anyway)", e);
     }
 
+    // 2) Play ASSISTANT clips while we record the mic
+try {
+  const assistantUrls = turns
+    .filter(t => t.role === "assistant")
+    .map(t => t.url ?? t.audioUrl ?? "/api/audio/test-ai");
+
+  console.log("[PlayCall] assistant urls", assistantUrls);
+
+  for (const url of assistantUrls) {
     try {
-      const urls = turns.map((t) =>
-        t.url ??
-        t.url ?? // use url if audioUrl is missing
-        (t.role === "assistant" ? "/api/audio/test-ai" : "/api/audio/test-user")
-      );
-      console.log("[PlayCall] urls", urls);
-      // 3) Fetch and play each clip sequentially
-      for (const url of urls) {
-        try {
-          const r = await fetch(url, { cache: "no-store" });
-          const blob = await r.blob();
-          console.log("[PlayCall] fetched", url, "size", blob.size, "type", blob.type);
-          if (blob.size === 0) continue;
+      const r = await fetch(url, { cache: "no-store" });
+      const blob = await r.blob();
+      if (blob.size === 0) continue;
 
-          const src = URL.createObjectURL(blob);
-          const a = new Audio(src);
-          a.volume = 1.0;
-          a.playbackRate = 1.0;
-          await a.play();
-          await new Promise((res) => (a.onended = res));
-          URL.revokeObjectURL(src);
-        } catch (e) {
-          console.error("[PlayCall] failed for", url, e);
-        }
+      const src = URL.createObjectURL(blob);
+      const a = new Audio(src);
+      a.volume = 1.0;
+      a.playbackRate = 1.0;
+      await a.play();
+      await new Promise(res => (a.onended = res));
+      URL.revokeObjectURL(src);
+    } catch (e) {
+      console.error("[PlayCall] assistant fetch/play failed", url, e);
+    }
+  }
+} finally {
+  // 3) Stop mic and upload what we captured
+  try {
+    const rec = await mic.stopRecording();
+    console.log("[PlayCall] mic stopped", rec ? { size: rec.size, type: rec.type } : null);
+
+    if (rec && rec.size > 0) {
+      const { url } = await uploadAudio(rec, "user");
+      console.log("[PlayCall] uploaded mic url", url);
+
+      // Attach to the first USER turn and persist the review
+      const idx = turns.findIndex(t => t.role === "user");
+      if (idx >= 0) {
+        turns[idx] = { ...turns[idx], url, audioUrl: url };
       }
-    } finally {
-      // 4) Stop mic and upload what we captured; save to the USER turn; persist review
+
+      await fetch(`/api/reviews/${reviewId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: reviewId, createdAt: Date.now(), turns }),
+      });
+      console.log("[PlayCall] review updated with user audio");
+
+      // 4) Optional: play your own clip back so you hear yourself
       try {
-        const rec = await mic.stopRecording();
-        console.log("[PlayCall] mic stopped", rec ? { size: rec.size, type: rec.type } : null);
+        const a2 = new Audio(url);
+        a2.volume = 1.0;
+        await a2.play();
+        await new Promise(res => (a2.onended = res));
+      } catch (e) {
+        console.warn("[PlayCall] self-monitor playback failed", e);
+      }
+    } else {
+      console.warn("[PlayCall] no mic recording available");
+    }
+  } catch (e) {
+    console.warn("[PlayCall] mic upload/save failed", e);
+  }
 
-        if (rec && rec.size > 0) {
-          const { url } = await uploadAudio(rec, "user");
-          console.log("[PlayCall] uploaded mic url", url);
-
-          // find first user turn and attach the url
-const idx = turns.findIndex((t) => t.role === "user");
-if (idx >= 0) {
-  // write to `url` (and keep audioUrl in sync, harmless)
-  turns[idx] = { ...turns[idx], url, audioUrl: url };
+  setPlaying(false);
 }
 
-          // persist the updated turns to the review
-          await fetch(`/api/reviews/${reviewId}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id: reviewId, createdAt: Date.now(), turns }),
-          });
-          console.log("[PlayCall] review updated with user audio");
-        } else {
-          console.warn("[PlayCall] no mic recording available");
-        }
-      } catch (e) {
-        console.warn("[PlayCall] mic upload/save failed", e);
-      }
-
-      setPlaying(false);
-    }
   }
 
   return (

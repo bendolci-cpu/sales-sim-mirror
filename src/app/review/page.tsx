@@ -146,7 +146,7 @@ export default async function ReviewPage({
       )}
 
   {/* Controls row */} 
-  <PlayCallButton reviewedId={id} turns={turns} />
+  <PlayCallButton reviewId={id} turns={turns} />
 
       {/* Transcript */}
       <h2 className="uppercase tracking-wide text-slate-400 text-xs">Transcript</h2>
