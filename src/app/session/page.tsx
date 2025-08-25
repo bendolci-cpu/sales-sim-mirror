@@ -121,7 +121,7 @@ const roomRef = useRef<Room | null>(null);
     return new Blob([buffer], { type: 'audio/wav' });
   }
 
-  // Start a MediaRecorder on a single track and resolve to uploaded URL on stop
+  // Start a MediaRecorder on a single track and resolve to an object URL on stop
   function startRecorderForTrack(track: MediaStreamTrack): { rec: MediaRecorder; done: Promise<string | null> } {
     const stream = new MediaStream([track]);
     const rec = new MediaRecorder(stream);
@@ -132,8 +132,8 @@ const roomRef = useRef<Room | null>(null);
     rec.onstop = async () => {
       try {
         const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
-        const url = await uploadBlobGetUrl(blob);
-        resolveDone(url ?? null);
+        const url = URL.createObjectURL(blob);
+        resolveDone(url);
       } catch {
         resolveDone(null);
       }
@@ -304,7 +304,7 @@ async function endLiveKitCall() {
             onFinal: async (finalText) => {
               const words = finalText.split(/\s+/).filter(Boolean).length;
               const wpm = Math.round((words / 2) * 60); // rough fallback with 2s assumed
-              // stop per-turn recorder and await upload URL
+              // stop per-turn recorder and await object URL
               let turnUrl: string | null = pendingUserAudioRef.current || null;
               try { userRecRef.current?.stop(); } catch {}
               try { turnUrl = (await userRecDoneRef.current) ?? turnUrl; } catch {}
@@ -333,7 +333,7 @@ async function endLiveKitCall() {
                     const r = await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: reply }) });
                     if (r.ok) { const j = await r.json(); aurl = j?.url ?? null; }
                   } catch {}
-                  // Stop agent recorder and upload blob if available; prefer recorder URL over stub
+                  // Stop agent recorder and prefer per-turn object URL over stub
                   try { agentRecRef.current?.stop(); } catch {}
                   try {
                     const recorded = (await agentRecDoneRef.current) ?? null;
@@ -389,7 +389,12 @@ async function endLiveKitCall() {
     const startedAt = startedAtRef.current || Date.now();
     const endedAt = Date.now();
     const durationSec = Math.max(0, Math.round((endedAt - startedAt) / 1000));
-    const turnsForReview: AgentTurn[] = historyRef.current.map(t => ({ role: t.role, text: t.text, ts: startedAt + t.at, audioUrl: t.audioUrl }));
+    const turnsForReview: AgentTurn[] = historyRef.current.map(t => ({
+      role: t.role,
+      text: t.text,
+      ts: startedAt + t.at,
+      audioUrl: (t as any).audioUrl ?? null,
+    }));
     const call: CallReview = {
       id,
       scenarioId: currentScenario?.id ?? null,
