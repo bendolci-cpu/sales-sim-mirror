@@ -1,0 +1,36 @@
+{
+  "id": "d2b396a8-07ff-47f3-aea8-2b63789fbfef",
+  "createdAt": 1756090740386,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ED Charge Nurse. ED needs sub‑5‑minute room turnovers.",
+      "url": null,
+      "audioUrl": null
+    },
+    {
+      "role": "user",
+      "text": "this is a test can you hear me",
+      "url": "/api/audio/test-user",
+      "audioUrl": "/api/audio/test-user"
+    },
+    {
+      "role": "agent",
+      "text": "Tell me more about your current process—where are the bottlenecks?",
+      "url": "/api/audio/test-ai",
+      "audioUrl": "/api/audio/test-ai"
+    },
+    {
+      "role": "user",
+      "text": "tell me",
+      "url": "/api/audio/test-user",
+      "audioUrl": "/api/audio/test-user"
+    },
+    {
+      "role": "agent",
+      "text": "I’m listening. What’s top of mind today?",
+      "url": "/api/audio/test-ai",
+      "audioUrl": "/api/audio/test-ai"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "id": "02af9e5c-f7cc-4c51-b6ae-16a425992f13",
+  "createdAt": 1756090226084,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ICU Nurse Manager + IP. Unit flagged elevated C.",
+      "url": null,
+      "audioUrl": null
+    },
+    {
+      "role": "user",
+      "text": "hey this is a check",
+      "url": "/api/audio/test-user",
+      "audioUrl": "/api/audio/test-user"
+    },
+    {
+      "role": "agent",
+      "text": "Can you share how your staff currently handles C. diff room turnovers?",
+      "url": "/api/audio/test-ai",
+      "audioUrl": "/api/audio/test-ai"
+    }
+  ]
+}

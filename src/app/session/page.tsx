@@ -19,6 +19,17 @@ import { saveCall } from "@/lib/calls/store";
 import type { CallMeta, CallTurn } from "@/lib/calls/types";
 import { mic, useMicStatus } from "@/lib/mic";
 
+function ensureAudioEl(id: string): HTMLAudioElement {
+  let el = document.getElementById(id) as HTMLAudioElement | null;
+  if (!el) {
+    el = document.createElement("audio");
+    el.id = id;
+    el.style.display = "none";
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
 function SessionInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -54,6 +65,13 @@ const roomRef = useRef<Room | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const micStatus = useMicStatus();
   const pendingUserAudioRef = useRef<string | null>(null);
+  // Per-turn recording refs
+  const localMicTrackRef = useRef<MediaStreamTrack | null>(null);
+  const agentTrackRef = useRef<MediaStreamTrack | null>(null);
+  const userRecRef = useRef<MediaRecorder | null>(null);
+  const agentRecRef = useRef<MediaRecorder | null>(null);
+  const userRecDoneRef = useRef<Promise<string | null> | null>(null);
+  const agentRecDoneRef = useRef<Promise<string | null> | null>(null);
 
   // hydrate showChat from localStorage to avoid flicker
   useEffect(() => {
@@ -103,6 +121,27 @@ const roomRef = useRef<Room | null>(null);
     return new Blob([buffer], { type: 'audio/wav' });
   }
 
+  // Start a MediaRecorder on a single track and resolve to uploaded URL on stop
+  function startRecorderForTrack(track: MediaStreamTrack): { rec: MediaRecorder; done: Promise<string | null> } {
+    const stream = new MediaStream([track]);
+    const rec = new MediaRecorder(stream);
+    const chunks: BlobPart[] = [];
+    let resolveDone: (url: string | null) => void = () => {};
+    const done = new Promise<string | null>((resolve) => { resolveDone = resolve; });
+    rec.ondataavailable = (e: BlobEvent) => { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onstop = async () => {
+      try {
+        const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+        const url = await uploadBlobGetUrl(blob);
+        resolveDone(url ?? null);
+      } catch {
+        resolveDone(null);
+      }
+    };
+    try { rec.start(); } catch {}
+    return { rec, done };
+  }
+
 
 // LIVEKIT: connect & publish mic
 async function startLiveKitCall(identity = "user", roomName = "sales-sim") {
@@ -120,6 +159,53 @@ async function startLiveKitCall(identity = "user", roomName = "sales-sim") {
 
   const audioTrack = await createLocalAudioTrack();
   await room.localParticipant.publishTrack(audioTrack);
+  // keep a reference for per-turn user recording
+  localMicTrackRef.current = audioTrack.mediaStreamTrack;
+
+  // Local mic monitor (muted)
+  const micEl = ensureAudioEl("micMonitor");
+  micEl.muted = true;
+  micEl.autoplay = true;
+  // @ts-expect-error playsInline exists on HTMLMediaElement in browsers
+  micEl.playsInline = true;
+  try {
+    micEl.srcObject = new MediaStream([audioTrack.mediaStreamTrack]);
+    micEl.play?.().catch(() => {});
+  } catch {}
+
+  // Remote audio subscription
+  room.on("trackSubscribed", (track: any) => {
+    try {
+      if (track?.kind === "audio" || track?.kind === 2) {
+        if (track?.mediaStreamTrack) agentTrackRef.current = track.mediaStreamTrack as MediaStreamTrack;
+        const agentEl = ensureAudioEl("agentMonitor");
+        agentEl.muted = false;
+        agentEl.autoplay = true;
+        // @ts-expect-error playsInline exists on HTMLMediaElement in browsers
+        agentEl.playsInline = true;
+        try {
+          if (typeof track.attach === "function") {
+            const el = track.attach();
+            if (!agentEl.srcObject && (el as any).srcObject) {
+              agentEl.srcObject = (el as any).srcObject as MediaStream;
+            } else if (track.mediaStreamTrack) {
+              agentEl.srcObject = new MediaStream([track.mediaStreamTrack]);
+            }
+          } else if (track.mediaStreamTrack) {
+            agentEl.srcObject = new MediaStream([track.mediaStreamTrack]);
+          }
+          agentEl.play().catch(() => {});
+        } catch {}
+      }
+    } catch {}
+  });
+
+  (window as any).__livekitAudio = {
+    room,
+    localTrack: audioTrack,
+    micElId: "micMonitor",
+    agentElId: "agentMonitor",
+  };
 
   roomRef.current = room;
   setVoiceConnected(true);
@@ -129,8 +215,32 @@ async function startLiveKitCall(identity = "user", roomName = "sales-sim") {
 // LIVEKIT: disconnect
 async function endLiveKitCall() {
   try {
-    await roomRef.current?.disconnect();
-  } finally {
+    // Stop any in-progress per-turn recorders
+    try { userRecRef.current?.stop(); } catch {}
+    try { agentRecRef.current?.stop(); } catch {}
+    userRecRef.current = null; agentRecRef.current = null;
+    const refs = (window as any).__livekitAudio;
+    if (refs?.localTrack) {
+      try { await refs.room?.localParticipant.unpublishTrack(refs.localTrack); } catch {}
+      try { refs.localTrack.stop(); } catch {}
+    }
+    const micEl = document.getElementById(refs?.micElId) as HTMLAudioElement | null;
+    if (micEl) { try { micEl.pause(); } catch {} micEl.srcObject = null; micEl.remove(); }
+    const agentEl = document.getElementById(refs?.agentElId) as HTMLAudioElement | null;
+    if (agentEl) { try { agentEl.pause(); } catch {} agentEl.srcObject = null; agentEl.remove(); }
+    try {
+      refs?.room?.participants.forEach((p: any) => {
+        p.audioTracks.forEach((pub: any) => {
+          const t: any = pub?.audioTrack;
+          if (t?.detach) {
+            try { t.detach().forEach((el: HTMLMediaElement) => { try { el.pause?.(); } catch {}; (el as any).srcObject = null; el.remove?.(); }); } catch {}
+          }
+        });
+      });
+    } catch {}
+  } catch {}
+  finally {
+    try { await roomRef.current?.disconnect(); } catch {}
     roomRef.current = null;
     setVoiceConnected(false);
     console.log("LiveKit: disconnected");
@@ -172,6 +282,14 @@ async function endLiveKitCall() {
             onSpeechStart: () => {
               pendingUserAudioRef.current = null;
               try { mic.startRecording(); } catch {}
+              // start per-turn local recorder on the mic track
+              try {
+                if (localMicTrackRef.current) {
+                  const { rec, done } = startRecorderForTrack(localMicTrackRef.current);
+                  userRecRef.current = rec;
+                  userRecDoneRef.current = done;
+                }
+              } catch {}
             },
             onSpeechEnd: async () => {
               try {
@@ -183,12 +301,17 @@ async function endLiveKitCall() {
                 }
               } catch (e) { console.warn("upload user audio failed", e); }
             },
-            onFinal: (finalText) => {
+            onFinal: async (finalText) => {
               const words = finalText.split(/\s+/).filter(Boolean).length;
               const wpm = Math.round((words / 2) * 60); // rough fallback with 2s assumed
-              const pending = pendingUserAudioRef.current || undefined;
-              pushTurn("user", finalText, { wpm, audioUrl: pending });
-              console.log("[Turn:user]", { text: finalText.slice(0,40), audioUrl: pending });
+              // stop per-turn recorder and await upload URL
+              let turnUrl: string | null = pendingUserAudioRef.current || null;
+              try { userRecRef.current?.stop(); } catch {}
+              try { turnUrl = (await userRecDoneRef.current) ?? turnUrl; } catch {}
+              userRecRef.current = null; userRecDoneRef.current = null;
+              const audioUrl = turnUrl || "/api/audio/test-user";
+              pushTurn("user", finalText, { wpm, audioUrl });
+              console.log("[Turn:user]", { text: finalText.slice(0,40), audioUrl });
               pendingUserAudioRef.current = null;
               if (agentSpeakingRef.current) {
                 stopSpeaking();
@@ -196,15 +319,27 @@ async function endLiveKitCall() {
               if (currentScenario) {
                 const reply = getAgentReply(historyRef.current, currentScenario);
                 setTimeout(async () => {
-                  // Real TTS pipeline: call /api/tts, upload, then attach URL
+                  // Start per-turn agent recorder as soon as we have remote track
+                  if (!agentRecRef.current && agentTrackRef.current) {
+                    try {
+                      const { rec, done } = startRecorderForTrack(agentTrackRef.current);
+                      agentRecRef.current = rec;
+                      agentRecDoneRef.current = done;
+                    } catch {}
+                  }
+                  // Real TTS pipeline: call /api/tts (stub returns seeded URL)
                   let aurl: string | null = null;
                   try {
-                    const r = await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: reply, voice: "default" }) });
-                    if (r.ok) {
-                      const ttsBlob = await r.blob();
-                      aurl = await uploadBlobGetUrl(ttsBlob);
-                    }
+                    const r = await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: reply }) });
+                    if (r.ok) { const j = await r.json(); aurl = j?.url ?? null; }
                   } catch {}
+                  // Stop agent recorder and upload blob if available; prefer recorder URL over stub
+                  try { agentRecRef.current?.stop(); } catch {}
+                  try {
+                    const recorded = (await agentRecDoneRef.current) ?? null;
+                    if (recorded) aurl = recorded;
+                  } catch {}
+                  agentRecRef.current = null; agentRecDoneRef.current = null;
                   pushTurn("agent", reply, { audioUrl: aurl || undefined });
                   console.log("[Turn:assistant]", { text: reply.slice(0,40), audioUrl: aurl });
                   agentSpeakingRef.current = true;
