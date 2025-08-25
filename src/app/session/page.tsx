@@ -110,14 +110,13 @@ async function startLiveKitCall(identity = "user", roomName = "sales-sim") {
   const { token } = await res.json();
   if (!token) throw new Error("No LiveKit token returned");
 
-  const url =
-  process.env.NEXT_PUBLIC_LIVEKIT_URL ?? process.env.LIVEKIT_URL ?? "";
-if (!url || !url.startsWith("wss://")) {
-  throw new Error(`Bad LIVEKIT_URL: "${url}"`);
-}
+  const url = process.env.NEXT_PUBLIC_LIVEKIT_URL || "";
+  if (!url || !url.startsWith("wss://")) {
+    throw new Error(`Bad LIVEKIT_URL: "${url}"`);
+  }
 
-const room = new Room();
-await room.connect(url, token);
+  const room = new Room();
+  await room.connect(url, token);
 
   const audioTrack = await createLocalAudioTrack();
   await room.localParticipant.publishTrack(audioTrack);
