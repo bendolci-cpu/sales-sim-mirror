@@ -1,6 +1,8 @@
 "use client";
 
-import { Suspense, useMemo, useRef, useState, useEffect } from "react";
+
+import { Room, createLocalAudioTrack } from "livekit-client";
+import { useRef, useState, useMemo, useEffect, Suspense } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import ClientOnly from "@/components/ClientOnly";
@@ -34,6 +36,8 @@ function SessionInner() {
   const [voiceConnected, setVoiceConnected] = useState<boolean>(false);
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
   const machineRef = useRef<CallMachine | null>(null);
+  // LIVEKIT
+const roomRef = useRef<Room | null>(null);
   const historyRef = useRef<Array<{ role: "user" | "agent"; text: string; at: number; wpm?: number; interrupted?: boolean; audioUrl?: string }>>([]);
   const callIdRef = useRef<string>("");
   const startedAtRef = useRef<number>(0);
@@ -99,7 +103,44 @@ function SessionInner() {
     return new Blob([buffer], { type: 'audio/wav' });
   }
 
+
+// LIVEKIT: connect & publish mic
+async function startLiveKitCall(identity = "user", roomName = "sales-sim") {
+  const res = await fetch(`/api/getToken?identity=${identity}&roomName=${roomName}`);
+  const { token } = await res.json();
+  if (!token) throw new Error("No LiveKit token returned");
+
+  const url =
+  process.env.NEXT_PUBLIC_LIVEKIT_URL ?? process.env.LIVEKIT_URL ?? "";
+if (!url || !url.startsWith("wss://")) {
+  throw new Error(`Bad LIVEKIT_URL: "${url}"`);
+}
+
+const room = new Room();
+await room.connect(url, token);
+
+  const audioTrack = await createLocalAudioTrack();
+  await room.localParticipant.publishTrack(audioTrack);
+
+  roomRef.current = room;
+  setVoiceConnected(true);
+  console.log("LiveKit: connected & mic published");
+}
+
+// LIVEKIT: disconnect
+async function endLiveKitCall() {
+  try {
+    await roomRef.current?.disconnect();
+  } finally {
+    roomRef.current = null;
+    setVoiceConnected(false);
+    console.log("LiveKit: disconnected");
+  }
+}
+
+
   async function handleCall() {
+    await startLiveKitCall("test-user", "sales-sim");
     if (!isMock) return; // mock-only
     if (!machineRef.current) machineRef.current = new CallMachine();
     const m = machineRef.current;
@@ -181,6 +222,7 @@ function SessionInner() {
   }
 
   async function handleEnd() {
+    await endLiveKitCall();
     stopSpeaking();
     const m = machineRef.current;
     m?.end();
@@ -288,7 +330,7 @@ function SessionInner() {
             <span className={`text-xs ${!isMock ? "text-gray-900" : "text-gray-500"}`}>Live</span>
             <button
               type="button"
-              onClick={() => router.push("/")}
+              onClick={handleEnd}
               className="ml-2 rounded-md border border-gray-300 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
             >
               End Session
