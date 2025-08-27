@@ -580,7 +580,7 @@ async function endLiveKitCall() {
         )}
       </section>
     </main>
-  );
+  ); 
 }
 
 export default function SessionPage() {
