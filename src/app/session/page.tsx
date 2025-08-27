@@ -266,16 +266,23 @@ async function endLiveKitCall() {
       setIsRecording(true);
     } catch (err) { console.error('Mic start failed', err); }
     // Agent greeting once connected (single guard)
-    const unsub = m.subscribe(async (state)=> {
+    const unsub = m.subscribe(async (state) => {
       if (state === "connected") {
         unsub();
         if (!greetedRef.current) {
           greetedRef.current = true;
-          const greeting = currentScenario ? `Hi, this is ${currentScenario.persona}. ${currentScenario.brief.split(".")[0]}.` : "Hi, thanks for calling.";
-          const r = await fetch(”/api/tts”, { method: “POST”, headers: { “Content-Type”: “application/json” }, body: JSON.stringify({ text: greeting }) });
+          const greeting = currentScenario
+            ? `Hi, this is ${currentScenario.persona}. ${currentScenario.brief.split(".")[0]}.`
+            : "Hi, thanks for calling.";
+          const r = await fetch("/api/tts", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: greeting }),
+          });
           const j = r.ok ? await r.json() : null;
           const gurl = j?.url ?? null;
-          pushTurn(“agent”, greeting, { audioUrl: gurl || undefined });
+          pushTurn("agent", greeting, { audioUrl: gurl || undefined });
+          await new Promise((res) => setTimeout(res, 600 + Math.floor(Math.random() * 400)));
         }
         // start continuous web speech
         if (!speechRef.current) {
@@ -352,16 +359,8 @@ if (aurl) {
 }
 
 // Do NOT speak locally; that leaks into the mic recording
-await new Promise<void>((resolve) => {
-  setTimeout(resolve, 600 + Math.floor(Math.random() * 400));
-});
-              }
-            },
-          });
-        }
-        try { speechRef.current?.start(); } catch {}
-      }
-    });
+await new Promise((res) => setTimeout(res, 600 + Math.floor(Math.random() * 400)));
+try { speechRef.current?.start(); } catch {}    
   }
 
   async function handleEnd() {
