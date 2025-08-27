@@ -17,12 +17,13 @@ async function ensureDir() {
  * Returns { id, createdAt, turns } or 404 if missing
  */
 export async function GET(
-  _req: NextRequest,
-  { params }: { params: { id: string } }
+  _req: Request,
+  ctx: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await ctx.params;
     await ensureDir();
-    const txt = await fs.readFile(fileFor(params.id), "utf8");
+    const txt = await fs.readFile(fileFor(id), "utf8");
     const json = JSON.parse(txt);
     // no-store so Review page always fetches fresh
     return NextResponse.json(json, { headers: { "Cache-Control": "no-store" } });
@@ -37,10 +38,11 @@ export async function GET(
  * Upserts the file.
  */
 export async function POST(
-  req: NextRequest,
-  { params }: { params: { id: string } }
+  req: Request,
+  ctx: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await ctx.params;
     await ensureDir();
     const body = await req.json();
 
@@ -55,12 +57,12 @@ const turns = Array.isArray(body?.turns)
 : [];
 
 const payload = {
-id: params.id,
+id,
 createdAt: body?.createdAt ?? Date.now(),
 turns,
 };
 
-    await fs.writeFile(fileFor(params.id), JSON.stringify(payload, null, 2), "utf8");
+    await fs.writeFile(fileFor(id), JSON.stringify(payload, null, 2), "utf8");
     return NextResponse.json(payload, { headers: { "Cache-Control": "no-store" } });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });

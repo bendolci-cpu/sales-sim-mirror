@@ -3,7 +3,7 @@ export const dynamic = "force-dynamic"; // always fetch fresh
 
 import Link from "next/link";
 import PlayCallButton from "@/components/PlayCallButton";
-import { headers } from “next/headers”;
+import { headers } from "next/headers";
 
 /** ----- Types ----- */
 type Turn = {
@@ -26,8 +26,11 @@ type GetRes =
 
 async function getReview(id: string): Promise<GetRes> {
   try {
-const base = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
-const res = await fetch(`${base}/api/reviews/${id}`, { cache: "no-store" });
+    const hdrs = await headers();
+    const host = hdrs.get("host") ?? "localhost:3000";
+    const proto = host.startsWith("localhost") ? "http" : "https";
+    const base = process.env.NEXT_PUBLIC_BASE_URL ?? `${proto}://${host}`;
+    const res = await fetch(`${base}/api/reviews/${id}`, { cache: "no-store" });
     if (!res.ok) {
       return { ok: false, status: res.status, data: null, err: await res.text() };
     }
@@ -107,10 +110,11 @@ export default async function ReviewPage({
       ],
     };
 
-    const host = headers().get(“host”) ?? “localhost:3000”;
-const proto = host.startsWith(“localhost”) ? “http” : “https”;
-const base = ${proto}://${host};
-    const post = await fetch(${base}/api/reviews/${id}, { … })
+    const hdrs2 = await headers();
+    const host = hdrs2.get("host") ?? "localhost:3000";
+    const proto = host.startsWith("localhost") ? "http" : "https";
+    const base = process.env.NEXT_PUBLIC_BASE_URL ?? `${proto}://${host}`;
+    const post = await fetch(`${base}/api/reviews/${id}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -120,7 +124,9 @@ const base = ${proto}://${host};
     if (post.ok) res = await getReview(id);
   }
 
-  const turns: Turn[] = Array.isArray(res.data?.turns) ? res.data!.turns : [];
+  const turns: import("@/components/PlayCallButton").Turn[] = Array.isArray(res.data?.turns)
+    ? res.data!.turns.map((t: any) => ({ role: t.role, text: (t.text ?? "") as string, audioUrl: t.audioUrl ?? null }))
+    : [];
 
   return (
     <main className="mx-auto max-w-3xl text-slate-100 p-6 space-y-6">
@@ -150,7 +156,7 @@ const base = ${proto}://${host};
       )}
 
   {/* Controls row */} 
-  <PlayCallButton reviewId={id} turns={turns} />
+  <PlayCallButton turns={turns} />
 
       {/* Transcript */}
       <h2 className="uppercase tracking-wide text-slate-400 text-xs">Transcript</h2>
