@@ -47,6 +47,12 @@ function SessionInner() {
   const [voiceConnected, setVoiceConnected] = useState<boolean>(false);
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
   const machineRef = useRef<CallMachine | null>(null);
+  // Scenario selection (must be defined before use in greeting logic)
+  const scenarioId: string = searchParams.get("scenario") || "";
+  const currentScenario: Scenario | null = useMemo(() => {
+    const found = SCENARIOS.find((s: Scenario) => s.id === scenarioId);
+    return found ?? null;
+  }, [scenarioId]);
   // LIVEKIT
 const roomRef = useRef<Room | null>(null);
   const historyRef = useRef<Array<{ role: "user" | "agent"; text: string; at: number; wpm?: number; interrupted?: boolean; audioUrl?: string }>>([]);
@@ -359,9 +365,14 @@ if (aurl) {
 }
 
 // Do NOT speak locally; that leaks into the mic recording
-await new Promise((res) => setTimeout(res, 600 + Math.floor(Math.random() * 400)));
-try { speechRef.current?.start(); } catch {}    
-  }
+await new Promise((resolve) => setTimeout(resolve, 600 + Math.floor(Math.random() * 400)));
+try { speechRef.current?.start(); } catch {}
+            },
+          });
+        }
+        try { speechRef.current?.start(); } catch {}
+      }
+    });
 
   async function handleEnd() {
     await endLiveKitCall();
@@ -424,12 +435,6 @@ try { speechRef.current?.start(); } catch {}
     } catch (e) { console.error("[EndCall] persist failed", e); }
     router.push(`/review?id=${id}`);
   }
-
-  const scenarioId: string = searchParams.get("scenario") || "";
-  const currentScenario: Scenario | null = useMemo(() => {
-    const found = SCENARIOS.find((s: Scenario) => s.id === scenarioId);
-    return found ?? null;
-  }, [scenarioId]);
 
   return (
     <main className="min-h-screen bg-gray-50">
