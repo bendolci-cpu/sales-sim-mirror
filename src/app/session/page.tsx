@@ -266,15 +266,16 @@ async function endLiveKitCall() {
       setIsRecording(true);
     } catch (err) { console.error('Mic start failed', err); }
     // Agent greeting once connected (single guard)
-    const unsub = m.subscribe((state) => {
+    const unsub = m.subscribe(async (state)=> {
       if (state === "connected") {
         unsub();
         if (!greetedRef.current) {
           greetedRef.current = true;
           const greeting = currentScenario ? `Hi, this is ${currentScenario.persona}. ${currentScenario.brief.split(".")[0]}.` : "Hi, thanks for calling.";
-          pushTurn("agent", greeting);
-          agentSpeakingRef.current = true;
-          setTimeout(() => agentSpeak(greeting).then(() => { agentSpeakingRef.current = false; }), 300);
+          const r = await fetch(”/api/tts”, { method: “POST”, headers: { “Content-Type”: “application/json” }, body: JSON.stringify({ text: greeting }) });
+          const j = r.ok ? await r.json() : null;
+          const gurl = j?.url ?? null;
+          pushTurn(“agent”, greeting, { audioUrl: gurl || undefined });
         }
         // start continuous web speech
         if (!speechRef.current) {
@@ -342,12 +343,18 @@ try {
 } catch {}
 agentRecRef.current = null;
 agentRecDoneRef.current = null;
-                  pushTurn("agent", reply, { audioUrl: aurl || undefined });
-                  console.log("[Turn:assistant]", { text: reply.slice(0,40), audioUrl: aurl });
-                  agentSpeakingRef.current = true;
-                  await agentSpeak(reply);
-                  agentSpeakingRef.current = false;
-                }, 600 + Math.floor(Math.random() * 400));
+if (aurl) {
+  pushTurn("agent", reply, { audioUrl: aurl });
+  console.log("[Turn:assistant]", { text: reply.slice(0,40), audioUrl: aurl });
+} else {
+  // No TTS and no recording — skip pushing empty audio to avoid mic re-records
+  console.warn("No TTS or recording available — skipping agent audio for this turn");
+}
+
+// Do NOT speak locally; that leaks into the mic recording
+await new Promise<void>((resolve) => {
+  setTimeout(resolve, 600 + Math.floor(Math.random() * 400));
+});
               }
             },
           });
