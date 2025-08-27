@@ -59,6 +59,7 @@ const roomRef = useRef<Room | null>(null);
   const callIdRef = useRef<string>("");
   const startedAtRef = useRef<number>(0);
   const connectedAtRef = useRef<number>(0);
+  const voiceConnectedRef = useRef<boolean>(false);
   const [showChat, setShowChat] = useState<boolean>(false);
   const greetedRef = useRef<boolean>(false);
   const lastHashRef = useRef<string>("");
@@ -163,10 +164,16 @@ async function startLiveKitCall(identity = "user", roomName = "sales-sim") {
   const room = new Room();
   await room.connect(url, token);
 
-  const audioTrack = await createLocalAudioTrack();
-  await room.localParticipant.publishTrack(audioTrack);
-  // keep a reference for per-turn user recording
-  localMicTrackRef.current = audioTrack.mediaStreamTrack;
+  let audioTrack;
+  try {
+    audioTrack = await createLocalAudioTrack();
+    await room.localParticipant.publishTrack(audioTrack);
+    // keep a reference for per-turn user recording
+    localMicTrackRef.current = audioTrack.mediaStreamTrack;
+  } catch (error) {
+    console.error('LiveKit audio track creation failed:', error);
+    // Continue without audio track - the call can still work for listening
+  }
 
   // Local mic monitor (muted)
   const micEl = ensureAudioEl("micMonitor");
@@ -175,8 +182,10 @@ async function startLiveKitCall(identity = "user", roomName = "sales-sim") {
   // @ts-expect-error playsInline exists on HTMLMediaElement in browsers
   micEl.playsInline = true;
   try {
-    micEl.srcObject = new MediaStream([audioTrack.mediaStreamTrack]);
-    micEl.play?.().catch(() => {});
+    if (audioTrack?.mediaStreamTrack) {
+      micEl.srcObject = new MediaStream([audioTrack.mediaStreamTrack]);
+      micEl.play?.().catch(() => {});
+    }
   } catch {}
 
   // Remote audio subscription
@@ -208,7 +217,7 @@ async function startLiveKitCall(identity = "user", roomName = "sales-sim") {
 
   (window as any).__livekitAudio = {
     room,
-    localTrack: audioTrack,
+    localTrack: audioTrack || null,
     micElId: "micMonitor",
     agentElId: "agentMonitor",
   };
@@ -255,22 +264,31 @@ async function endLiveKitCall() {
 
 
   async function handleCall() {
-    await startLiveKitCall("test-user", "sales-sim");
-    if (!isMock) return; // mock-only
+    try {
+      await startLiveKitCall("test-user", "sales-sim");
+    } catch (error) {
+      console.error("[Call] startLiveKitCall failed:", error);
+      return;
+    }
     if (!machineRef.current) machineRef.current = new CallMachine();
     const m = machineRef.current;
     m.start();
     setVoiceConnected(false);
-    setTimeout(() => { m.answer(); setVoiceConnected(true); connectedAtRef.current = Date.now(); }, 1200);
+    setTimeout(() => { m.answer(); setVoiceConnected(true); voiceConnectedRef.current = true; connectedAtRef.current = Date.now(); }, 1200);
     startedAtRef.current = Date.now();
     callIdRef.current = crypto.randomUUID();
     // Start Mic singleton and begin recording
     try {
       const stream = await mic.start();
-      if (stream) setMicStream(stream);
-      mic.startRecording();
-      setIsRecording(true);
-    } catch (err) { console.error('Mic start failed', err); }
+      if (stream) {
+        setMicStream(stream);
+        mic.startRecording();
+        setIsRecording(true);
+      }
+    } catch (err) { 
+      console.error('Mic start failed', err); 
+      // Continue with the call even if mic fails - LiveKit will handle its own audio
+    }
     // Agent greeting once connected (single guard)
     const unsub = m.subscribe(async (state) => {
       if (state === "connected") {
@@ -280,19 +298,25 @@ async function endLiveKitCall() {
           const greeting = currentScenario
             ? `Hi, this is ${currentScenario.persona}. ${currentScenario.brief.split(".")[0]}.`
             : "Hi, thanks for calling.";
-          const r = await fetch("/api/tts", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: greeting }),
-          });
-          const j = r.ok ? await r.json() : null;
-          const gurl = j?.url ?? null;
+          
+          const useTtsStub = isMock || !voiceConnectedRef.current;
+          let gurl: string | null = null;
+          if (useTtsStub) {
+            const r = await fetch("/api/tts", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ text: greeting }),
+            });
+            const j = r.ok ? await r.json() : null;
+            gurl = j?.url ?? null;
+          }
+          
           pushTurn("agent", greeting, { audioUrl: gurl || undefined });
           
-          // Speak the greeting locally
-          console.log("[Greeting] Speaking:", greeting);
-          await agentSpeak(greeting);
-          console.log("[Greeting] Finished speaking");
+          // Speak the greeting locally in mock mode
+          if (isMock) {
+            await agentSpeak(greeting);
+          }
           
           await new Promise((res) => setTimeout(res, 600 + Math.floor(Math.random() * 400)));
         }
@@ -349,35 +373,46 @@ async function endLiveKitCall() {
                       agentRecDoneRef.current = done;
                     } catch {}
                   }
-                  // Real TTS pipeline: call /api/tts (stub returns seeded URL)
-                  let aurl: string | null = null;
-                  try {
-                    const r = await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: reply }) });
-                    if (r.ok) { const j = await r.json(); aurl = j?.url ?? null; }
-                  } catch {}
-                  // Stop agent recorder and prefer per-turn object URL over stub
-                  // Stop agent recorder; use its blob only if TTS failed
-                  try { agentRecRef.current?.stop(); } catch {}
-                  try {
-                    const recorded = (await agentRecDoneRef.current) ?? null;
-                    if (!aurl && recorded) aurl = recorded; // ← only fallback when no TTS URL
-                  } catch {}
-                  agentRecRef.current = null;
-                  agentRecDoneRef.current = null;
-                  if (aurl) {
-                    pushTurn("agent", reply, { audioUrl: aurl });
-                    console.log("[Turn:assistant]", { text: reply.slice(0,40), audioUrl: aurl });
-                  } else {
-                    // No TTS and no recording — skip pushing empty audio to avoid mic re-records
-                    console.warn("No TTS or recording available — skipping agent audio for this turn");
+                  
+                  // Check for duplicate agent responses
+                  const lastTurn = historyRef.current[historyRef.current.length - 1];
+                  const isDuplicate = lastTurn && lastTurn.role === "agent" && lastTurn.text === reply;
+                  
+                  if (!isDuplicate) {
+                    // Real TTS pipeline: call /api/tts (stub returns seeded URL)
+                    const useTtsStub = isMock || !voiceConnectedRef.current;
+                    let aurl: string | null = null;
+                    if (useTtsStub) {
+                      try {
+                        const r = await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: reply }) });
+                        if (r.ok) { const j = await r.json(); aurl = j?.url ?? null; }
+                      } catch {}
+                    }
+                    
+                    // Stop agent recorder and prefer per-turn object URL over stub
+                    // Stop agent recorder; use its blob only if TTS failed
+                    try { agentRecRef.current?.stop(); } catch {}
+                    try {
+                      const recorded = (await agentRecDoneRef.current) ?? null;
+                      if (!aurl && recorded) aurl = recorded; // ← only fallback when no TTS URL
+                    } catch {}
+                    agentRecRef.current = null;
+                    agentRecDoneRef.current = null;
+                    
+                    if (aurl) {
+                      pushTurn("agent", reply, { audioUrl: aurl });
+                      console.log("[Turn:assistant]", { text: reply.slice(0,40), audioUrl: aurl });
+                    } else {
+                      // No TTS and no recording — skip pushing empty audio to avoid mic re-records
+                      console.warn("No TTS or recording available — skipping agent audio for this turn");
+                    }
                   }
 
-                  // Speak locally for real-time interaction
-                  console.log("[Agent] Speaking:", reply);
-                  await agentSpeak(reply);
-                  console.log("[Agent] Finished speaking");
-                  
-                  // Wait a bit before starting speech recognition again
+                  // Speak locally in mock mode
+                  if (isMock) {
+                    await agentSpeak(reply);
+                  }
+
                   await new Promise((resolve) => setTimeout(resolve, 600 + Math.floor(Math.random() * 400)));
                   try { speechRef.current?.start(); } catch {}
                 });
@@ -399,6 +434,7 @@ async function endLiveKitCall() {
     const m = machineRef.current;
     m?.end();
     setVoiceConnected(false);
+    voiceConnectedRef.current = false;
     greetedRef.current = false;
     try { speechRef.current?.stop(); } catch {}
     try {
