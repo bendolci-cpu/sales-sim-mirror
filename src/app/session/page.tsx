@@ -288,12 +288,19 @@ async function endLiveKitCall() {
           const j = r.ok ? await r.json() : null;
           const gurl = j?.url ?? null;
           pushTurn("agent", greeting, { audioUrl: gurl || undefined });
+          
+          // Speak the greeting locally
+          console.log("[Greeting] Speaking:", greeting);
+          await agentSpeak(greeting);
+          console.log("[Greeting] Finished speaking");
+          
           await new Promise((res) => setTimeout(res, 600 + Math.floor(Math.random() * 400)));
         }
         // start continuous web speech
         if (!speechRef.current) {
           speechRef.current = createWebSpeech({
             onSpeechStart: () => {
+              console.log("[Speech] Speech started");
               pendingUserAudioRef.current = null;
               try { mic.startRecording(); } catch {}
               // start per-turn local recorder on the mic track
@@ -316,6 +323,7 @@ async function endLiveKitCall() {
               } catch (e) { console.warn("upload user audio failed", e); }
             },
             onFinal: async (finalText) => {
+              console.log("[Speech] Final text:", finalText);
               const words = finalText.split(/\s+/).filter(Boolean).length;
               const wpm = Math.round((words / 2) * 60); // rough fallback with 2s assumed
               // stop per-turn recorder and await object URL
@@ -349,30 +357,41 @@ async function endLiveKitCall() {
                   } catch {}
                   // Stop agent recorder and prefer per-turn object URL over stub
                   // Stop agent recorder; use its blob only if TTS failed
-try { agentRecRef.current?.stop(); } catch {}
-try {
-  const recorded = (await agentRecDoneRef.current) ?? null;
-  if (!aurl && recorded) aurl = recorded; // ← only fallback when no TTS URL
-} catch {}
-agentRecRef.current = null;
-agentRecDoneRef.current = null;
-if (aurl) {
-  pushTurn("agent", reply, { audioUrl: aurl });
-  console.log("[Turn:assistant]", { text: reply.slice(0,40), audioUrl: aurl });
-} else {
-  // No TTS and no recording — skip pushing empty audio to avoid mic re-records
-  console.warn("No TTS or recording available — skipping agent audio for this turn");
-}
+                  try { agentRecRef.current?.stop(); } catch {}
+                  try {
+                    const recorded = (await agentRecDoneRef.current) ?? null;
+                    if (!aurl && recorded) aurl = recorded; // ← only fallback when no TTS URL
+                  } catch {}
+                  agentRecRef.current = null;
+                  agentRecDoneRef.current = null;
+                  if (aurl) {
+                    pushTurn("agent", reply, { audioUrl: aurl });
+                    console.log("[Turn:assistant]", { text: reply.slice(0,40), audioUrl: aurl });
+                  } else {
+                    // No TTS and no recording — skip pushing empty audio to avoid mic re-records
+                    console.warn("No TTS or recording available — skipping agent audio for this turn");
+                  }
 
-// Do NOT speak locally; that leaks into the mic recording
-await new Promise((resolve) => setTimeout(resolve, 600 + Math.floor(Math.random() * 400)));
-try { speechRef.current?.start(); } catch {}
-            },
+                  // Speak locally for real-time interaction
+                  console.log("[Agent] Speaking:", reply);
+                  await agentSpeak(reply);
+                  console.log("[Agent] Finished speaking");
+                  
+                  // Wait a bit before starting speech recognition again
+                  await new Promise((resolve) => setTimeout(resolve, 600 + Math.floor(Math.random() * 400)));
+                  try { speechRef.current?.start(); } catch {}
+                });
+              }
+            }
           });
         }
+        // Start speech recognition after greeting
+        console.log("[Speech] Starting speech recognition");
         try { speechRef.current?.start(); } catch {}
+        console.log("[Speech] Speech recognition started");
       }
     });
+  }
 
   async function handleEnd() {
     await endLiveKitCall();
