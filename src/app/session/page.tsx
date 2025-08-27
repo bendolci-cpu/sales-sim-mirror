@@ -334,12 +334,14 @@ async function endLiveKitCall() {
                     if (r.ok) { const j = await r.json(); aurl = j?.url ?? null; }
                   } catch {}
                   // Stop agent recorder and prefer per-turn object URL over stub
-                  try { agentRecRef.current?.stop(); } catch {}
-                  try {
-                    const recorded = (await agentRecDoneRef.current) ?? null;
-                    if (recorded) aurl = recorded;
-                  } catch {}
-                  agentRecRef.current = null; agentRecDoneRef.current = null;
+                  // Stop agent recorder; use its blob only if TTS failed
+try { agentRecRef.current?.stop(); } catch {}
+try {
+  const recorded = (await agentRecDoneRef.current) ?? null;
+  if (!aurl && recorded) aurl = recorded; // ← only fallback when no TTS URL
+} catch {}
+agentRecRef.current = null;
+agentRecDoneRef.current = null;
                   pushTurn("agent", reply, { audioUrl: aurl || undefined });
                   console.log("[Turn:assistant]", { text: reply.slice(0,40), audioUrl: aurl });
                   agentSpeakingRef.current = true;

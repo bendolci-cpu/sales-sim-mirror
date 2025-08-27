@@ -3,6 +3,7 @@ export const dynamic = "force-dynamic"; // always fetch fresh
 
 import Link from "next/link";
 import PlayCallButton from "@/components/PlayCallButton";
+import { headers } from “next/headers”;
 
 /** ----- Types ----- */
 type Turn = {
@@ -106,7 +107,10 @@ export default async function ReviewPage({
       ],
     };
 
-    const post = await fetch(`/api/reviews/${id}`, {
+    const host = headers().get(“host”) ?? “localhost:3000”;
+const proto = host.startsWith(“localhost”) ? “http” : “https”;
+const base = ${proto}://${host};
+    const post = await fetch(${base}/api/reviews/${id}, { … })
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
