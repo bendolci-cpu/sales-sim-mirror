@@ -1,0 +1,31 @@
+{
+  "id": "9535d657-a333-467c-b78a-c044153acfca",
+  "createdAt": 1756395744005,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ICU Nurse Manager + IP. Unit flagged elevated C.",
+      "url": "/uploads/aud-1756395727394.mp3"
+    },
+    {
+      "role": "user",
+      "text": "check one too",
+      "url": "blob:http://localhost:3000/6b73671b-eb97-451e-9186-7333d69755a1"
+    },
+    {
+      "role": "agent",
+      "text": "Can you share how your staff currently handles C. diff room turnovers?",
+      "url": "/uploads/aud-1756395735332.mp3"
+    },
+    {
+      "role": "user",
+      "text": "check one too check",
+      "url": "/api/audio/test-user"
+    },
+    {
+      "role": "agent",
+      "text": "Can you share how your staff currently handles C. diff room turnovers?",
+      "url": "/uploads/aud-1756395743043.mp3"
+    }
+  ]
+}

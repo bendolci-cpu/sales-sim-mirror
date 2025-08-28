@@ -1,0 +1,76 @@
+{
+  "id": "3ac0b6e1-5b03-466d-a85a-92bf65ed95b8",
+  "createdAt": 1756404639059,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ED Charge Nurse. ED needs sub‑5‑minute room turnovers.",
+      "url": "/uploads/aud-1756404605230.mp3"
+    },
+    {
+      "role": "user",
+      "text": "okay let me ask you what products you're currently using",
+      "url": "/api/audio/45e60518-0b10-4aed-9c7c-f05b68ec02a4"
+    },
+    {
+      "role": "agent",
+      "text": "Tell me more about your current process—where are the bottlenecks?",
+      "url": "/uploads/aud-1756404617668.mp3"
+    },
+    {
+      "role": "user",
+      "text": "current",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "process where are the bottlenecks",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "I’m listening. What’s top of mind today?",
+      "url": "/uploads/aud-1756404622072.mp3"
+    },
+    {
+      "role": "user",
+      "text": "what's top of mine today",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Tell me more about your current process—where are the bottlenecks?",
+      "url": "/uploads/aud-1756404627378.mp3"
+    },
+    {
+      "role": "user",
+      "text": "hold on wait",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "hold on",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Tell me more about your current process—where are the bottlenecks?",
+      "url": "/uploads/aud-1756404630243.mp3"
+    },
+    {
+      "role": "user",
+      "text": "current process",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "where are the bottlenecks",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Tell me more about your current process—where are the bottlenecks?",
+      "url": "/uploads/aud-1756404635219.mp3"
+    }
+  ]
+}

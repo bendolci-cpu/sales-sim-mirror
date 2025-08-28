@@ -15,56 +15,60 @@ async function ensureDir() {
 /**
  * GET /api/reviews/[id]
  * Returns { id, createdAt, turns } or 404 if missing
+ * Never returns 500 - only 404 for missing files
  */
 export async function GET(
   _req: Request,
   ctx: { params: Promise<{ id: string }> }
 ) {
+  const { id } = await ctx.params;
   try {
-    const { id } = await ctx.params;
     await ensureDir();
     const txt = await fs.readFile(fileFor(id), "utf8");
     const json = JSON.parse(txt);
     // no-store so Review page always fetches fresh
     return NextResponse.json(json, { headers: { "Cache-Control": "no-store" } });
-  } catch {
+  } catch (error) {
+    // Always return 404, never 500
+    console.log(`[API] Review ${id} not found:`, error);
     return NextResponse.json({ error: "not found" }, { status: 404 });
   }
 }
 
 /**
  * POST /api/reviews/[id]
- * Body: { createdAt?: number, turns: Array<{role:"user"|"assistant", text:string, audioUrl?:string}> }
- * Upserts the file.
+ * Body: { createdAt?: number, turns: Array<{role:"user"|"assistant", text:string, url?:string}> }
+ * Creates or updates the review file. Never returns 500.
  */
 export async function POST(
   req: Request,
   ctx: { params: Promise<{ id: string }> }
 ) {
+  const { id } = await ctx.params;
   try {
-    const { id } = await ctx.params;
     await ensureDir();
     const body = await req.json();
 
-    // normalize and persist url/audioUrl so the Review page can play clips
-const turns = Array.isArray(body?.turns)
-? body.turns.map((t: any) => ({
-    role: t.role,
-    text: t.text ?? "",
-    url: t.url ?? t.audioUrl ?? null,
-    audioUrl: t.audioUrl ?? t.url ?? null,
-  }))
-: [];
+    // Normalize and persist url field so the Review page can play clips
+    const turns = Array.isArray(body?.turns)
+      ? body.turns.map((t: any) => ({
+          role: t.role,
+          text: t.text ?? "",
+          url: t.url ?? t.audioUrl ?? null, // Support both url and audioUrl for backward compatibility
+        }))
+      : [];
 
-const payload = {
-id,
-createdAt: body?.createdAt ?? Date.now(),
-turns,
-};
+    const payload = {
+      id,
+      createdAt: body?.createdAt ?? Date.now(),
+      turns,
+    };
 
     await fs.writeFile(fileFor(id), JSON.stringify(payload, null, 2), "utf8");
-    return NextResponse.json(payload, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({ ok: true, data: payload }, { headers: { "Cache-Control": "no-store" } });
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    // Log error but return 400 instead of 500
+    console.error(`[API] Failed to save review ${id}:`, err);
+    return NextResponse.json({ error: "Invalid request data" }, { status: 400 });
   }
 }

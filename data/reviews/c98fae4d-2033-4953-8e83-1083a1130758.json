@@ -1,0 +1,31 @@
+{
+  "id": "c98fae4d-2033-4953-8e83-1083a1130758",
+  "createdAt": 1756394969090,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ED Charge Nurse. ED needs sub‑5‑minute room turnovers.",
+      "url": "/uploads/aud-1756394959589.mp3"
+    },
+    {
+      "role": "user",
+      "text": "test test",
+      "url": "blob:http://localhost:3000/6084dd46-9eab-445c-8dea-3c0bf699b62d"
+    },
+    {
+      "role": "agent",
+      "text": "Tell me more about your current process—where are the bottlenecks?",
+      "url": "/uploads/aud-1756394963275.mp3"
+    },
+    {
+      "role": "user",
+      "text": "one two",
+      "url": "/api/audio/test-user"
+    },
+    {
+      "role": "agent",
+      "text": "Tell me more about your current process—where are the bottlenecks?",
+      "url": "/uploads/aud-1756394968590.mp3"
+    }
+  ]
+}

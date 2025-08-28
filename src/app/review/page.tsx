@@ -1,14 +1,17 @@
 // src/app/review/page.tsx
+// IMPORTANT: This is a SERVER COMPONENT that should NEVER initialize mic, web-speech, or LiveKit
+// All audio playback is handled by the client-only ReviewPlayer component
 export const dynamic = "force-dynamic"; // always fetch fresh
 
 import Link from "next/link";
-import PlayCallButton from "@/components/PlayCallButton";
+import ReviewPlayer from "./ReviewPlayer";
 import { headers } from "next/headers";
 
 /** ----- Types ----- */
 type Turn = {
   role: "user" | "assistant";
   text?: string;
+  url?: string | null;
   audioUrl?: string | null;
 };
 
@@ -41,7 +44,7 @@ async function getReview(id: string): Promise<GetRes> {
   }
 }
 
-function Transcript({ turns }: { turns: Turn[] }) {
+function Transcript({ turns }: { turns: { role: "user" | "assistant"; text: string; url?: string | null; audioUrl?: string | null }[] }) {
   if (!turns.length) {
     return (
       <div className="mt-2 text-slate-400 opacity-60">
@@ -59,8 +62,13 @@ function Transcript({ turns }: { turns: Turn[] }) {
               {t.role}
             </span>
             <span className="uppercase tracking-wide opacity-60 text-[11px]">
-              {t.audioUrl ? "has audio" : "no audio"}
+              {t.url ? "has audio" : "no audio"}
             </span>
+            {t.url && (
+              <span className="text-xs text-slate-400 font-mono">
+                {t.url}
+              </span>
+            )}
           </div>
           <div className="whitespace-pre-wrap mt-1 text-slate-200">
             {t.text ?? <span className="opacity-60">— no text —</span>}
@@ -105,8 +113,8 @@ export default async function ReviewPage({
       id,
       createdAt: Date.now(),
       turns: [
-        { role: "user", text: "check one two", audioUrl: "/api/audio/test-user" },
-        { role: "assistant", text: "roger that", audioUrl: "/api/audio/test-ai" },
+        { role: "user", text: "check one two", url: "/api/audio/test-user" },
+        { role: "assistant", text: "roger that", url: "/api/audio/test-ai" },
       ],
     };
 
@@ -124,8 +132,13 @@ export default async function ReviewPage({
     if (post.ok) res = await getReview(id);
   }
 
-  const turns: import("@/components/PlayCallButton").Turn[] = Array.isArray(res.data?.turns)
-    ? res.data!.turns.map((t: any) => ({ role: t.role, text: (t.text ?? "") as string, audioUrl: t.audioUrl ?? null }))
+  const turns: { role: "user" | "assistant"; text: string; url?: string | null; audioUrl?: string | null }[] = Array.isArray(res.data?.turns)
+    ? res.data!.turns.map((t: any) => ({ 
+        role: t.role, 
+        text: (t.text ?? "") as string, 
+        url: t.url || t.audioUrl ? ((t.url || t.audioUrl).startsWith("/") ? (t.url || t.audioUrl) : `/${t.url || t.audioUrl}`) : null,
+        audioUrl: t.audioUrl || t.url ? ((t.audioUrl || t.url).startsWith("/") ? (t.audioUrl || t.url) : `/${t.audioUrl || t.url}`) : null
+      }))
     : [];
 
   return (
@@ -156,7 +169,7 @@ export default async function ReviewPage({
       )}
 
   {/* Controls row */} 
-  <PlayCallButton turns={turns} />
+  <ReviewPlayer turns={turns} />
 
       {/* Transcript */}
       <h2 className="uppercase tracking-wide text-slate-400 text-xs">Transcript</h2>
@@ -173,8 +186,8 @@ export default async function ReviewPage({
               {turns.map((t, i) => (
                 <div key={i}>
                   <span className="text-slate-300">{i}. {t.role}</span>{" "}
-                  <span className={t.audioUrl ? "text-emerald-300" : "text-red-300"}>
-                    {t.audioUrl ?? "(missing url)"}
+                  <span className={t.url ? "text-emerald-300" : "text-red-300"}>
+                    {t.url ?? "(missing url)"}
                   </span>
                 </div>
               ))}
@@ -189,7 +202,7 @@ export default async function ReviewPage({
       <h2 className="uppercase tracking-wide text-slate-400 text-xs mt-6">Raw JSON</h2>
       <pre className="max-w-xl overflow-auto text-[12px] bg-slate-900 rounded px-3 py-2 shadow">
         {JSON.stringify(
-          turns.map((t) => ({ role: t.role, url: t.audioUrl ?? "", text: t.text ?? "" })),
+          turns.map((t) => ({ role: t.role, url: t.url ?? "", text: t.text ?? "" })),
           null,
           2
         )}

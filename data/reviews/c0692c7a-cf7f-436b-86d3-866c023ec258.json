@@ -1,0 +1,41 @@
+{
+  "id": "c0692c7a-cf7f-436b-86d3-866c023ec258",
+  "createdAt": 1756402212703,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ED Charge Nurse. ED needs sub‑5‑minute room turnovers.",
+      "url": "/uploads/aud-1756402165169.mp3"
+    },
+    {
+      "role": "user",
+      "text": "okay what are you doing now",
+      "url": "/api/audio/test-user"
+    },
+    {
+      "role": "agent",
+      "text": "Sure—if now’s not ideal, what would make the timing right?",
+      "url": "/uploads/aud-1756402174860.mp3"
+    },
+    {
+      "role": "user",
+      "text": "well I have some time later next week maybe",
+      "url": "/api/audio/test-user"
+    },
+    {
+      "role": "agent",
+      "text": "Understood. We focus on reducing staff friction with clear, fast workflows.",
+      "url": "/uploads/aud-1756402191062.mp3"
+    },
+    {
+      "role": "user",
+      "text": "hey can you hear me",
+      "url": "/api/audio/test-user"
+    },
+    {
+      "role": "agent",
+      "text": "Tell me more about your current process—where are the bottlenecks?",
+      "url": "/uploads/aud-1756402208310.mp3"
+    }
+  ]
+}

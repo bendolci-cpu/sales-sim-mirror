@@ -1,0 +1,31 @@
+{
+  "id": "541c3cba-e2a0-4a19-b3da-4c5ad5fa0623",
+  "createdAt": 1756398987005,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is IP Director + Value Analysis. Annual renewal for Sani‑Cloth AF3 and Bleach Wipes across ICU/ED/OR.",
+      "url": "/uploads/aud-1756398968721.mp3"
+    },
+    {
+      "role": "user",
+      "text": "annual renewal for Santa Claus af3 and bleach wipes across icuedr",
+      "url": "/api/audio/test-user"
+    },
+    {
+      "role": "agent",
+      "text": "We can streamline the bundle so it matches your current priorities.",
+      "url": "/uploads/aud-1756398980402.mp3"
+    },
+    {
+      "role": "user",
+      "text": "find the bundles",
+      "url": "/api/audio/test-user"
+    },
+    {
+      "role": "agent",
+      "text": "Happy to talk renewal. Which areas have delivered the most value for you?",
+      "url": "/uploads/aud-1756398984657.mp3"
+    }
+  ]
+}

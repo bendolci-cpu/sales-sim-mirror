@@ -1,0 +1,36 @@
+{
+  "id": "18f4967a-8dfa-49d4-8ef0-4278c46bb69b",
+  "createdAt": 1756405853802,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ICU Nurse Manager + IP. Unit flagged elevated C.",
+      "url": "/uploads/aud-1756405832958.mp3"
+    },
+    {
+      "role": "user",
+      "text": "hey can you hear me",
+      "url": "/api/audio/3212686e-8c6b-4c68-8d08-24074b242e7e"
+    },
+    {
+      "role": "agent",
+      "text": "Can you share how your staff currently handles C. diff room turnovers?",
+      "url": "/uploads/aud-1756405844032.mp3"
+    },
+    {
+      "role": "user",
+      "text": "your staff currently handles C diff room turnovers",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "yeah sure",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Understood. We focus on reducing staff friction with clear, fast workflows.",
+      "url": "/uploads/aud-1756405851560.mp3"
+    }
+  ]
+}

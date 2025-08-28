@@ -8,9 +8,10 @@ export type CallBarProps = {
   onCall: () => void;
   onEnd: () => void;
   stream?: MediaStream | null;
+  isInitializing?: boolean;
 };
 
-export default function CallBar({ state, onCall, onEnd, stream }: CallBarProps) {
+export default function CallBar({ state, onCall, onEnd, stream, isInitializing = false }: CallBarProps) {
   const [elapsed, setElapsed] = useState<number>(0);
   const startedAtRef = useRef<number | null>(null);
 
@@ -45,7 +46,17 @@ export default function CallBar({ state, onCall, onEnd, stream }: CallBarProps) 
       <div className="flex items-center gap-3">
         <MicViz active={state === "connected"} stream={stream} />
         {state === "idle" || state === "ended" ? (
-          <button onClick={onCall} className="rounded-xl bg-emerald-600 px-4 py-2 text-sm text-white shadow hover:bg-emerald-700">Call</button>
+          <button 
+            onClick={onCall} 
+            disabled={isInitializing}
+            className={`rounded-xl px-4 py-2 text-sm text-white shadow ${
+              isInitializing 
+                ? 'bg-gray-400 cursor-not-allowed' 
+                : 'bg-emerald-600 hover:bg-emerald-700'
+            }`}
+          >
+            {isInitializing ? 'Initializing...' : 'Call'}
+          </button>
         ) : state === "ringing" ? (
           <button onClick={onEnd} className="rounded-xl bg-rose-600 px-4 py-2 text-sm text-white shadow hover:bg-rose-700">End Call</button>
         ) : (

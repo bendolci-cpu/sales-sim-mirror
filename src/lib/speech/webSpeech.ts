@@ -18,6 +18,8 @@ export function createWebSpeech(handlers: Handlers): WebSpeechControls | null {
   let rec: any = null;
   let active = false;
   let endedExternally = false;
+  let restartCount = 0;
+  const MAX_RESTARTS = 5; // Prevent infinite restart loops
 
   const start = () => {
     if (active) return;
@@ -42,21 +44,42 @@ export function createWebSpeech(handlers: Handlers): WebSpeechControls | null {
     };
     rec.onspeechstart = () => { handlers.onSpeechStart?.(); };
     rec.onspeechend = () => { handlers.onSpeechEnd?.(); };
-    rec.onerror = () => {
-      // soft restart unless stopped externally
+    rec.onerror = (event: any) => {
+      console.warn("[WebSpeech] Error:", event.error);
+      // Don't restart on certain errors that indicate permanent issues
+      if (event.error === 'not-allowed' || event.error === 'network' || event.error === 'no-speech') {
+        endedExternally = true;
+        active = false;
+      }
     };
     rec.onend = () => {
       active = false;
-      if (!endedExternally) {
-        // restart automatically
-        start();
+      if (!endedExternally && restartCount < MAX_RESTARTS) {
+        // Add delay before restart to prevent rapid cycling
+        restartCount++;
+        console.log(`[WebSpeech] Restarting (${restartCount}/${MAX_RESTARTS})...`);
+        setTimeout(() => {
+          if (!endedExternally) {
+            start();
+          }
+        }, 1000); // 1 second delay
+      } else if (restartCount >= MAX_RESTARTS) {
+        console.warn("[WebSpeech] Max restarts reached, stopping");
+        endedExternally = true;
       }
     };
-    try { rec.start(); active = true; } catch {}
+    try { 
+      rec.start(); 
+      active = true; 
+    } catch (e) {
+      console.error("[WebSpeech] Failed to start:", e);
+      active = false;
+    }
   };
 
   const stop = () => {
     endedExternally = true;
+    restartCount = 0; // Reset restart count when manually stopped
     try { rec?.stop?.(); } catch {}
     active = false;
   };

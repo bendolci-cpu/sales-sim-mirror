@@ -8,7 +8,7 @@ class MicService {
   private status: MicStatus = 'idle';
   private listeners: Set<MicListener> = new Set();
 
-  onStatus(fn: MicListener) { this.listeners.add(fn); fn(this.status); return () => this.listeners.delete(fn); }
+  onStatus(fn: MicListener) { this.listeners.add(fn); fn(this.status); return () => { this.listeners.delete(fn); }; }
   private setStatus(s: MicStatus) { this.status = s; this.listeners.forEach(l => l(s)); }
 
   getStream(): MediaStream | null { return this.stream; }
@@ -49,6 +49,12 @@ class MicService {
       else this.setStatus('error');
       throw e;
     }
+  }
+
+  // Method to set an existing stream (useful when stream is obtained elsewhere)
+  setStream(stream: MediaStream): void {
+    this.stream = stream;
+    this.setStatus('listening');
   }
 
   stop(): void {

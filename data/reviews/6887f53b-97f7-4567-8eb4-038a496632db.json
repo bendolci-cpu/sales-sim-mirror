@@ -1,0 +1,31 @@
+{
+  "id": "6887f53b-97f7-4567-8eb4-038a496632db",
+  "createdAt": 1756398802752,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ICU Nurse Manager + IP. Unit flagged elevated C.",
+      "url": "/uploads/aud-1756398786312.mp3"
+    },
+    {
+      "role": "user",
+      "text": "unit flagged elevated C",
+      "url": "/api/audio/test-user"
+    },
+    {
+      "role": "agent",
+      "text": "We’ve seen strong outcomes when teams adopt a consistent sporicidal protocol.",
+      "url": "/uploads/aud-1756398793986.mp3"
+    },
+    {
+      "role": "user",
+      "text": "we've seen strong outcomes when teams adopt a consistent sporicidal protocol",
+      "url": "/api/audio/test-user"
+    },
+    {
+      "role": "agent",
+      "text": "Can you share how your staff currently handles C. diff room turnovers?",
+      "url": "/uploads/aud-1756398801793.mp3"
+    }
+  ]
+}

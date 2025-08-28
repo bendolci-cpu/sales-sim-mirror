@@ -1,0 +1,46 @@
+{
+  "id": "95e0112d-7b39-415f-bf41-90d15c3e8d8e",
+  "createdAt": 1756404463610,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ICU Nurse Manager + IP. Unit flagged elevated C.",
+      "url": "/uploads/aud-1756404424656.mp3"
+    },
+    {
+      "role": "user",
+      "text": "elevated C",
+      "url": "/api/audio/8e557f30-644a-4c47-96b8-2b8a83fbea80"
+    },
+    {
+      "role": "user",
+      "text": "hey how's it going",
+      "url": "/api/audio/1aa6001c-d119-43a8-b10c-4db153ca869f"
+    },
+    {
+      "role": "agent",
+      "text": "Can you share how your staff currently handles C. diff room turnovers?",
+      "url": "/uploads/aud-1756404433986.mp3"
+    },
+    {
+      "role": "user",
+      "text": "yeah we clean it with bleach",
+      "url": "/api/audio/c94f26b5-a10f-49d4-bce9-2dbc258598ac"
+    },
+    {
+      "role": "agent",
+      "text": "We’ve seen strong outcomes when teams adopt a consistent sporicidal protocol.",
+      "url": "/uploads/aud-1756404450665.mp3"
+    },
+    {
+      "role": "user",
+      "text": "okay",
+      "url": "/api/audio/f3e8ae48-0e5a-4132-8e82-ed5d36e6e13d"
+    },
+    {
+      "role": "agent",
+      "text": "Can you share how your staff currently handles C. diff room turnovers?",
+      "url": "/uploads/aud-1756404462635.mp3"
+    }
+  ]
+}

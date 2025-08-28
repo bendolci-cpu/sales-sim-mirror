@@ -1,0 +1,56 @@
+{
+  "id": "75f81a50-48ea-4cf0-884c-f7451520b907",
+  "createdAt": 1756396924449,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ICU Nurse Manager + IP. Unit flagged elevated C.",
+      "url": "/uploads/aud-1756396889300.mp3"
+    },
+    {
+      "role": "user",
+      "text": "check check",
+      "url": "/api/audio/test-user"
+    },
+    {
+      "role": "agent",
+      "text": "Can you share how your staff currently handles C. diff room turnovers?",
+      "url": "/uploads/aud-1756396894850.mp3"
+    },
+    {
+      "role": "user",
+      "text": "can you hear me",
+      "url": "/api/audio/test-user"
+    },
+    {
+      "role": "agent",
+      "text": "Can you share how your staff currently handles C. diff room turnovers?",
+      "url": "/uploads/aud-1756396903566.mp3"
+    },
+    {
+      "role": "user",
+      "text": "this is another check can you hear me",
+      "url": "/api/audio/test-user"
+    },
+    {
+      "role": "agent",
+      "text": "Sure—if now’s not ideal, what would make the timing right?",
+      "url": "/uploads/aud-1756396911754.mp3"
+    },
+    {
+      "role": "user",
+      "text": "now",
+      "url": "/api/audio/test-user"
+    },
+    {
+      "role": "agent",
+      "text": "Sure—if now’s not ideal, what would make the timing right?",
+      "url": "/uploads/aud-1756396919414.mp3"
+    },
+    {
+      "role": "user",
+      "text": "sure",
+      "url": "/api/audio/test-user"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "id": "27d63a4f-6816-45b8-b523-7faec488c993",
+  "createdAt": 1756277517490,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ED Charge Nurse. ED needs sub‑5‑minute room turnovers.",
+      "url": "/uploads/aud-1756277512280.mp3",
+      "audioUrl": "/uploads/aud-1756277512280.mp3"
+    }
+  ]
+}
