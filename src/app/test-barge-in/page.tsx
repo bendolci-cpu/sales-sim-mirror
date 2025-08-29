@@ -51,9 +51,9 @@ export default function TestBargeInPage() {
           <div className="bg-green-50 border border-green-200 rounded-lg p-4">
             <h2 className="font-semibold text-green-900 mb-2">Optimizations Applied:</h2>
             <ul className="text-sm text-green-800 space-y-2 list-disc list-inside">
-              <li>Ultra-aggressive detection (micRMS > 35)</li>
-              <li>Super-aggressive fallback (micRMS > 25)</li>
-              <li>Dev-mode detection (micRMS > 20)</li>
+              <li>Ultra-aggressive detection (micRMS &gt; 35)</li>
+              <li>Super-aggressive fallback (micRMS &gt; 25)</li>
+              <li>Dev-mode detection (micRMS &gt; 20)</li>
               <li>100fps monitoring frequency</li>
               <li>Aggressive audio cleanup</li>
             </ul>
