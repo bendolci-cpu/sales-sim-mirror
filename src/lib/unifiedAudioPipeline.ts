@@ -46,6 +46,10 @@ export class UnifiedAudioPipeline {
   // Configuration
   private config: UnifiedAudioPipelineConfig;
   
+  // Pipeline state
+  private isInitialized = false;
+  private isCleaningUp = false;
+  
   constructor(config: UnifiedAudioPipelineConfig = {}) {
     this.config = config;
   }
@@ -53,21 +57,32 @@ export class UnifiedAudioPipeline {
   // === INITIALIZATION ===
   
   async initialize(): Promise<void> {
+    if (this.isInitialized || this.isCleaningUp) {
+      logDebug('[UnifiedAudio] Already initialized or cleaning up');
+      return;
+    }
+    
     logInfo('[UnifiedAudio] Initializing pipeline');
     
-    // Initialize audio context
-    await this.initializeAudioContext();
-    
-    // Initialize microphone
-    await this.initializeMicrophone();
-    
-    // Initialize speech recognition
-    await this.initializeSpeechRecognition();
-    
-    // Start health monitoring
-    this.startHealthMonitoring();
-    
-    logInfo('[UnifiedAudio] Pipeline initialized successfully');
+    try {
+      // Initialize audio context
+      await this.initializeAudioContext();
+      
+      // Initialize microphone
+      await this.initializeMicrophone();
+      
+      // Initialize speech recognition
+      await this.initializeSpeechRecognition();
+      
+      // Start health monitoring
+      this.startHealthMonitoring();
+      
+      this.isInitialized = true;
+      logInfo('[UnifiedAudio] Pipeline initialized successfully');
+    } catch (error) {
+      logError('[UnifiedAudio] Failed to initialize pipeline:', error);
+      throw error;
+    }
   }
   
   private async initializeAudioContext(): Promise<void> {
@@ -154,10 +169,15 @@ export class UnifiedAudioPipeline {
   // === TTS PLAYBACK ===
   
   async playTTS(text: string, turnId: string): Promise<void> {
+    if (this.isCleaningUp) {
+      logWarn('[UnifiedAudio] Cannot play TTS during cleanup');
+      return;
+    }
+    
     // Stop any existing TTS
     this.stopTTS();
     
-    // Create new abort controller
+    // Create new abort controller for this TTS call
     this.currentTTSAbortController = new AbortController();
     this.currentTTSTurnId = turnId;
     
@@ -171,7 +191,10 @@ export class UnifiedAudioPipeline {
     
     try {
       // Generate TTS audio URL
-      const response = await fetch(`/api/tts?text=${encodeURIComponent(text)}`);
+      const response = await fetch(`/api/tts?text=${encodeURIComponent(text)}`, {
+        signal: this.currentTTSAbortController.signal
+      });
+      
       if (!response.ok) {
         throw new Error(`TTS API error: ${response.status}`);
       }
@@ -386,6 +409,12 @@ export class UnifiedAudioPipeline {
   // === CLEANUP ===
   
   cleanup(): void {
+    if (this.isCleaningUp) {
+      logDebug('[UnifiedAudio] Cleanup already in progress');
+      return;
+    }
+    
+    this.isCleaningUp = true;
     logInfo('[UnifiedAudio] DISCONNECT_REASON:cleanup_requested');
     logInfo('[UnifiedAudio] Cleaning up pipeline');
     
@@ -428,6 +457,9 @@ export class UnifiedAudioPipeline {
     this.micSource = null;
     this.micTrack = null;
     
+    this.isInitialized = false;
+    this.isCleaningUp = false;
+    
     logInfo('[UnifiedAudio] Pipeline cleanup complete');
   }
   
@@ -447,6 +479,10 @@ export class UnifiedAudioPipeline {
   
   getMicTrack(): MediaStreamTrack | null {
     return this.micTrack;
+  }
+  
+  isInitialized(): boolean {
+    return this.isInitialized;
   }
 }
 

@@ -9,12 +9,13 @@ export async function GET(request: NextRequest) {
   }
   
   try {
-    // For now, return a mock audio URL
-    // In a real implementation, this would call a TTS service
-    const mockAudioUrl = `/uploads/mock-tts-${Date.now()}.mp3`;
+    // Generate a short audio buffer instead of returning a 404 URL
+    const audioBuffer = generateMockAudioBuffer(text);
+    const blob = new Blob([audioBuffer], { type: 'audio/wav' });
+    const audioUrl = URL.createObjectURL(blob);
     
     return NextResponse.json({ 
-      audioUrl: mockAudioUrl,
+      audioUrl: audioUrl,
       text: text,
       duration: text.length * 50 // Rough estimate: 50ms per character
     });
@@ -34,12 +35,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Text is required' }, { status: 400 });
     }
     
-    // For now, return a mock audio URL
-    // In a real implementation, this would call a TTS service
-    const mockAudioUrl = `/uploads/mock-tts-${Date.now()}.mp3`;
+    // Generate a short audio buffer instead of returning a 404 URL
+    const audioBuffer = generateMockAudioBuffer(text);
+    const blob = new Blob([audioBuffer], { type: 'audio/wav' });
+    const audioUrl = URL.createObjectURL(blob);
     
     return NextResponse.json({ 
-      url: mockAudioUrl,
+      url: audioUrl,
       text: text
     });
     
@@ -47,4 +49,26 @@ export async function POST(request: NextRequest) {
     console.error('TTS API error:', error);
     return NextResponse.json({ error: 'TTS generation failed' }, { status: 500 });
   }
+}
+
+// Generate a simple audio buffer for mock TTS
+function generateMockAudioBuffer(text: string): ArrayBuffer {
+  // Create a simple sine wave audio buffer
+  const sampleRate = 24000;
+  const duration = Math.max(0.5, text.length * 0.05); // 50ms per character, minimum 500ms
+  const numSamples = Math.floor(sampleRate * duration);
+  
+  // Create a simple beep sound
+  const frequency = 440; // A4 note
+  const amplitude = 0.3;
+  
+  const buffer = new ArrayBuffer(numSamples * 2); // 16-bit samples
+  const view = new Int16Array(buffer);
+  
+  for (let i = 0; i < numSamples; i++) {
+    const sample = Math.sin(2 * Math.PI * frequency * i / sampleRate);
+    view[i] = Math.floor(sample * amplitude * 32767);
+  }
+  
+  return buffer;
 }

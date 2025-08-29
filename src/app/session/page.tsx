@@ -251,7 +251,13 @@ function SessionInner() {
       
       await livekitRoom.current.connect(roomUrl, token);
       
-      // Create local audio track from our existing mic track
+      // Use the mic track from the unified pipeline for logging
+      const pipelineMicTrack = unifiedPipeline.current?.getMicTrack();
+      if (pipelineMicTrack) {
+        logInfo(`[Session] LIVEKIT_PUBLISH micTrack:${pipelineMicTrack.id}`);
+      }
+      
+      // Create local audio track (LiveKit will handle the mic access)
       const localTrack = await createLocalAudioTrack();
       
       // Publish the track
@@ -261,8 +267,10 @@ function SessionInner() {
         setPublishedTrackId(localTrack.sid);
         logInfo(`[Session] Published track: ${localTrack.sid}`);
         
-        // Log track IDs for debugging - should be equal since we're using the same track
-        logInfo(`[Mic/Publish] ids {micTrackId: ${micTrack.id}, publishedTrackId: ${localTrack.sid}, equal: ${micTrack.id === localTrack.sid}}`);
+        // Log track IDs for debugging
+        if (pipelineMicTrack) {
+          logInfo(`[Mic/Publish] ids {micTrackId: ${pipelineMicTrack.id}, publishedTrackId: ${localTrack.sid}, equal: ${pipelineMicTrack.id === localTrack.sid}}`);
+        }
       }
       
       logInfo("[Session] Connected to LiveKit room");

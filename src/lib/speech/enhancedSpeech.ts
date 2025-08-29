@@ -89,9 +89,16 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
     rec.interimResults = true; // Get interim results
     rec.maxAlternatives = 1;
     
-    // Configure for optimal performance
+    // Configure for optimal performance - wrap grammars in try/catch
     if (rec.grammars) {
-      rec.grammars = null; // Use default grammar
+      try {
+        // Only set grammars if we have a real SpeechGrammarList
+        // For now, leave it as null to use default grammar
+        rec.grammars = null;
+      } catch (error) {
+        logDebug('[EnhancedSpeech] Grammars not supported, using default');
+        // Continue without grammars - this is fine
+      }
     }
     
     logInfo('[EnhancedSpeech] Created recognizer instance');
