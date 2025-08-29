@@ -1,0 +1,61 @@
+{
+  "id": "bc4226c0-371f-4df3-ab03-c92736b18e67",
+  "createdAt": 1756433291761,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ED Charge Nurse. ED needs sub‑5‑minute room turnovers.",
+      "url": "/uploads/aud-1756433213720.mp3"
+    },
+    {
+      "role": "user",
+      "text": "hey can I interrupt",
+      "url": "/api/audio/569242ab-76ab-4ac2-913a-ea9debed7f67"
+    },
+    {
+      "role": "agent",
+      "text": "Of course! What do you need?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "what are you up to today",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Just making sure our ED runs smoothly and that we hit our turnover goals. How about you?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "what's the weather like",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "I’m not sure right now, but it’s always a good idea to check a weather app. Need any help with that?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "hello",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Hi there! How can I assist you today?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "what are you doing",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "I’m focused on ensuring efficient room turnovers in the ED. What’s on your mind?",
+      "url": null
+    }
+  ]
+}

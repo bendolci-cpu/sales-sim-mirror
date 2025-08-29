@@ -14,20 +14,22 @@ import { CallMachine } from "@/lib/voice/callMachine";
 import { getAgentReply, speak as agentSpeak, stopSpeaking } from "@/lib/voice/mockAgent";
 import CallBar from "@/components/CallBar";
 import DebugToggle from "@/components/DebugToggle";
-import { createWebSpeech, type WebSpeechControls } from "@/lib/speech/webSpeech";
+import AudioDeviceSelector from "@/components/AudioDeviceSelector";
+import { createEnhancedSpeech, type EnhancedSpeechControls } from "@/lib/speech/enhancedSpeech";
 import { saveCall } from "@/lib/calls/store";
 import type { CallMeta, CallTurn } from "@/lib/calls/types";
-import { mic, useMicStatus } from "@/lib/mic";
+import { mic } from "@/lib/mic";
+import { audioManager } from "@/lib/audio";
 
-function ensureAudioEl(id: string): HTMLAudioElement {
-  let el = document.getElementById(id) as HTMLAudioElement | null;
-  if (!el) {
-    el = document.createElement("audio");
-    el.id = id;
-    el.style.display = "none";
-    document.body.appendChild(el);
+// Ensure audio element exists and is configured
+async function ensureAudioEl(id: string, options?: { routeToDevice?: string; volume?: number }): Promise<HTMLAudioElement> {
+  let audioEl = document.getElementById(id) as HTMLAudioElement;
+  
+  if (!audioEl) {
+    audioEl = await audioManager.createAudioElement(id, options);
   }
-  return el;
+  
+  return audioEl;
 }
 
 function SessionInner() {
@@ -48,14 +50,16 @@ function SessionInner() {
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
   const machineRef = useRef<CallMachine | null>(null);
+  
   // Scenario selection (must be defined before use in greeting logic)
   const scenarioId: string = searchParams.get("scenario") || "";
   const currentScenario: Scenario | null = useMemo(() => {
     const found = SCENARIOS.find((s: Scenario) => s.id === scenarioId);
     return found ?? null;
   }, [scenarioId]);
+  
   // LIVEKIT
-const roomRef = useRef<Room | null>(null);
+  const roomRef = useRef<Room | null>(null);
   const historyRef = useRef<Array<{ role: "user" | "agent"; text: string; at: number; wpm?: number; interrupted?: boolean; audioUrl?: string }>>([]);
   const callIdRef = useRef<string>("");
   const startedAtRef = useRef<number>(0);
@@ -64,18 +68,122 @@ const roomRef = useRef<Room | null>(null);
   const [showChat, setShowChat] = useState<boolean>(false);
   const greetedRef = useRef<boolean>(false);
   const lastHashRef = useRef<string>("");
-  const speechRef = useRef<WebSpeechControls | null>(null);
+  const speechRef = useRef<EnhancedSpeechControls | null>(null);
   const [externalTurn, setExternalTurn] = useState<{ role: "user" | "bot"; text: string; timestamp?: number } | null>(null);
   const agentSpeakingRef = useRef<boolean>(false);
   const waitingForUserRef = useRef<boolean>(false);
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [isInitializing, setIsInitializing] = useState<boolean>(false);
   const [initError, setInitError] = useState<string | null>(null);
+  const [isToggling, setIsToggling] = useState<boolean>(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  
+  // Barge-in detection
+  const bargeInTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const continuousSpeechStartRef = useRef<number | null>(null);
+  const bargeInStartTimeRef = useRef<number | null>(null);
+  const bargeInDetectedRef = useRef<boolean>(false);
+  const aiPlayingStartTimeRef = useRef<number | null>(null);
+  
+  // Current AI audio element for direct cancellation
+  const currentAIAudioRef = useRef<HTMLAudioElement | null>(null);
+  
+  // Function to stop only the interrupted audio playback (not future ones)
+  const stopInterruptedAudioPlayback = () => {
+    console.log("[BARGE-IN] Stopping interrupted audio playback only");
+    
+    // Stop audioManager TTS
+    try {
+      audioManager.cancelTtsPlayback();
+      console.log("[BARGE-IN] AudioManager TTS cancelled");
+    } catch (e) {
+      console.warn("[BARGE-IN] Failed to cancel AudioManager TTS:", e);
+    }
+    
+    // Stop only the current AI audio element (the one being interrupted)
+    if (currentAIAudioRef.current) {
+      try {
+        currentAIAudioRef.current.pause();
+        currentAIAudioRef.current.currentTime = 0;
+        console.log("[BARGE-IN] Interrupted AI audio element cancelled:", currentAIAudioRef.current.src);
+      } catch (e) {
+        console.warn("[BARGE-IN] Failed to cancel current AI audio element:", e);
+      }
+      currentAIAudioRef.current = null;
+    }
+    
+    // Stop any pending TTS
+    if (pendingTtsRef.current) {
+      try {
+        pendingTtsRef.current.cancel();
+        console.log("[BARGE-IN] Pending TTS cancelled");
+      } catch (e) {
+        console.warn("[BARGE-IN] Failed to cancel pending TTS:", e);
+      }
+      pendingTtsRef.current = null;
+    }
+  };
+  
+  // Barge-in state management
+  const aiPlayingRef = useRef<boolean>(false);
+  const ttsPlayingRef = useRef<boolean>(false);
+  const bargeEnabledRef = useRef<boolean>(false);
+  const bargeActiveRef = useRef<boolean>(false);
+  
+  // Assistant deduplication
+  const recentAssistantTexts = useRef<Map<string, number>>(new Map()); // normalized text -> timestamp
+  const ASSISTANT_DEDUP_MS = 10000; // 10 seconds
+  
+  // Speech recognition singleton guard
+  const speechInstanceRef = useRef<EnhancedSpeechControls | null>(null);
+  
+  // Mic track monitoring
+  const micTrackStatusRef = useRef<{ live: boolean; enabled: boolean; readyState: string }>({
+    live: false,
+    enabled: false,
+    readyState: 'unknown'
+  });
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const micStatus = useMicStatus();
-  const pendingUserAudioRef = useRef<string | null>(null);
+  
+  // Call flow state machine - improved states
+  type CallState = 'idle' | 'user_speaking' | 'ai_thinking' | 'ai_playing';
+  const [callState, setCallState] = useState<CallState>('idle');
+  const callStateRef = useRef<CallState>('idle');
+  
+  // HMR protection
+  const mountedRef = useRef<boolean>(false);
+  const cleanupRef = useRef<Array<() => void>>([]);
+  
+  // Single-flight TTS guard
+  const currentTurnIdRef = useRef<string | null>(null);
+  const ttsEndedCallbacksRef = useRef<Map<string, () => void>>(new Map());
+  
+  // Echo suppression system
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const micAnalyserRef = useRef<AnalyserNode | null>(null);
+  const aiAnalyserRef = useRef<AnalyserNode | null>(null);
+  const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const aiSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const echoGateRef = useRef<{ active: boolean; startTime: number; micRMS: number; aiRMS: number }>({
+    active: false,
+    startTime: 0,
+    micRMS: 0,
+    aiRMS: 0
+  });
+  const echoGateConfig = { 
+    threshold: 12, 
+    duration: 200,
+    minWords: 3,
+    minDuration: 1200,
+    minConfidence: 0.92
+  }; // Enhanced echo gate config
+  
+  // Text chat mirror for debugging
+  const [asrPartials, setAsrPartials] = useState<string>("");
+  const [asrFinals, setAsrFinals] = useState<string[]>([]);
+  const [droppedItems, setDroppedItems] = useState<Array<{ text: string; reason: string; timestamp: number }>>([]);
+  
   // Per-turn recording refs
   const localMicTrackRef = useRef<MediaStreamTrack | null>(null);
   const agentTrackRef = useRef<MediaStreamTrack | null>(null);
@@ -85,49 +193,790 @@ const roomRef = useRef<Room | null>(null);
   const agentRecDoneRef = useRef<Promise<string | null> | null>(null);
   const attemptedRecordingRef = useRef<boolean>(false);
   
-  // Helper function to manage AI speech state
+  // Hot-reload protection
+  const isCallActiveRef = useRef<boolean>(false);
+  
+  // Strict turn management - only one active AI+TTS at a time
+  const activeTurnIdRef = useRef<string | null>(null);
+  const pendingTtsRef = useRef<{ cancel: () => void } | null>(null);
+  const ttsStartedRef = useRef<Set<string>>(new Set()); // Track which turnIds have started TTS
+  
+  // State machine helper functions
+  const enterAIPlaying = () => {
+    console.log("[State] Entering ai_playing");
+    setCallState('ai_playing');
+    callStateRef.current = 'ai_playing';
+    
+    // Set barge-in state flags
+    aiPlayingRef.current = true;
+    ttsPlayingRef.current = true;
+    bargeEnabledRef.current = true;
+    bargeActiveRef.current = false;
+    
+    // Track when AI playing started for timeout detection
+    aiPlayingStartTimeRef.current = Date.now();
+    
+    console.log("[State] ai_playing:true, tts_playing:true, barge_enabled:true, barge_active:false");
+    
+    // Reset barge-in detection
+    bargeInDetectedRef.current = false;
+    bargeInStartTimeRef.current = null;
+    
+    // Keep ASR active for barge-in detection - DON'T stop it!
+    // The speech recognition needs to stay active to detect when user starts speaking
+    console.log("[State] Keeping ASR active for barge-in detection");
+    
+    // Ensure mic track is enabled for barge-in detection
+    try {
+      if (micStreamRef.current) {
+        const audioTracks = micStreamRef.current.getAudioTracks();
+        audioTracks.forEach(track => {
+          track.enabled = true;
+          console.log("[State] Mic track enabled for barge-in detection");
+        });
+      }
+    } catch (e) {
+      console.warn("[State] Failed to enable mic track:", e);
+    }
+    
+    // Start barge-in monitoring
+    startBargeInMonitoring();
+    
+    setAgentSpeaking(true);
+    agentSpeakingRef.current = true;
+  };
+
+  const exitAIPlaying = () => {
+    console.log("[State] Exiting ai_playing");
+    
+    // Reset barge-in state flags
+    aiPlayingRef.current = false;
+    ttsPlayingRef.current = false;
+    bargeEnabledRef.current = false;
+    bargeActiveRef.current = false;
+    
+    console.log("[State] ai_playing:false, tts_playing:false, barge_enabled:false, barge_active:false");
+    
+    // Stop barge-in monitoring
+    stopBargeInMonitoring();
+    
+    // Set agent speaking to false first
+    setAgentSpeaking(false);
+    agentSpeakingRef.current = false;
+    
+    // Do NOT restart ASR - keep it running continuously
+    console.log("[State] ASR continues running (no restart)");
+    
+    setCallState('idle');
+    callStateRef.current = 'idle';
+  };
+
+  const enterUserSpeaking = () => {
+    console.log("[State] Entering user_speaking (barge-in)");
+    setCallState('user_speaking');
+    callStateRef.current = 'user_speaking';
+    
+    // Cancel any pending TTS
+    if (pendingTtsRef.current) {
+      try {
+        pendingTtsRef.current.cancel();
+        console.log("[State] TTS cancelled in enterUserSpeaking");
+      } catch (e) {
+        console.warn("[State] Failed to cancel TTS in enterUserSpeaking:", e);
+      }
+    }
+    pendingTtsRef.current = null;
+    
+    // Stop only the interrupted audio playback
+    stopInterruptedAudioPlayback();
+    
+    stopSpeaking();
+    setAgentSpeaking(false);
+    agentSpeakingRef.current = false;
+    
+    // Stop any playing audio elements
+    const audioElements = document.querySelectorAll('audio');
+    audioElements.forEach(audio => {
+      try {
+        audio.pause();
+        audio.currentTime = 0;
+      } catch (e) {
+        console.warn("[BargeIn] Failed to stop audio element:", e);
+      }
+    });
+    
+    // Clean up AI analyzer
+    aiAnalyserRef.current = null;
+    aiSourceRef.current = null;
+    
+    // Re-enable mic immediately
+    try {
+      if (micStreamRef.current) {
+        const audioTracks = micStreamRef.current.getAudioTracks();
+        audioTracks.forEach(track => {
+          track.enabled = true;
+        });
+        console.log("[State] Re-enabled mic for barge-in");
+      }
+    } catch (e) {
+      console.warn("[State] Failed to re-enable mic for barge-in:", e);
+    }
+    
+    // Speech recognition should already be active since we kept it running during AI playback
+    // Just ensure it's still running and ready to capture user input
+    console.log("[State] ASR continues running for user input (no restart)");
+    
+    // Return to listening after a short delay
+    setTimeout(() => {
+      setCallState('idle');
+      callStateRef.current = 'idle';
+    }, 100);
+  };
+
+  // HMR cleanup function
+  const cleanup = () => {
+    console.log("[Cleanup] Running cleanup");
+    
+    // Stop ASR and recognition
+    try {
+      if (speechRef.current) {
+        speechRef.current.stop();
+        speechRef.current = null;
+      }
+      if (speechInstanceRef.current) {
+        speechInstanceRef.current.stop();
+        speechInstanceRef.current = null;
+      }
+    } catch (e) {
+      console.warn("[Cleanup] Failed to stop speech:", e);
+    }
+    
+    // Stop microphone
+    try {
+      mic.stop();
+    } catch (e) {
+      console.warn("[Cleanup] Failed to stop microphone:", e);
+    }
+    
+    // Remove all listeners
+    cleanupRef.current.forEach(cleanupFn => {
+      try {
+        cleanupFn();
+      } catch (e) {
+        console.warn("[Cleanup] Failed to run cleanup function:", e);
+      }
+    });
+    cleanupRef.current = [];
+    
+    // Clear all timers
+    if (bargeInTimerRef.current) {
+      clearInterval(bargeInTimerRef.current);
+      bargeInTimerRef.current = null;
+    }
+    if (continuousSpeechStartRef.current) {
+      continuousSpeechStartRef.current = null;
+    }
+    if (bargeInStartTimeRef.current) {
+      bargeInStartTimeRef.current = null;
+    }
+    bargeInDetectedRef.current = false;
+    
+    // Clean up audio analyzers
+    try {
+      if (aiSourceRef.current) {
+        aiSourceRef.current.disconnect();
+        aiSourceRef.current = null;
+      }
+      if (micSourceRef.current) {
+        micSourceRef.current.disconnect();
+        micSourceRef.current = null;
+      }
+      aiAnalyserRef.current = null;
+      micAnalyserRef.current = null;
+    } catch (e) {
+      console.warn("[Cleanup] Failed to clean up audio analyzers:", e);
+    }
+    
+    // Stop and remove all audio elements
+    const audioElements = document.querySelectorAll('audio');
+    audioElements.forEach(audio => {
+      try {
+        audio.pause();
+        audio.currentTime = 0;
+        audio.src = '';
+        audio.muted = true;
+        // Remove the element to prevent memory leaks and MediaElementAudioSourceNode conflicts
+        if (audio.parentNode) {
+          audio.parentNode.removeChild(audio);
+        }
+      } catch (e) {
+        console.warn("[Cleanup] Failed to stop audio element:", e);
+      }
+    });
+    
+    console.log(`[Cleanup] Removed ${audioElements.length} audio elements`);
+    
+    // Clean up audio manager (closes AudioContext)
+    try {
+      audioManager.cleanup();
+    } catch (e) {
+      console.warn("[Cleanup] Failed to clean up audio manager:", e);
+    }
+    
+    // Reset all refs
+    micStreamRef.current = null;
+    agentSpeakingRef.current = false;
+    activeTurnIdRef.current = null;
+    pendingTtsRef.current = null;
+    ttsStartedRef.current.clear();
+  };
+
+  // Echo suppression helper functions
+  const setupMicAnalyzer = () => {
+    try {
+      // Use the shared audio context from audioManager
+      audioManager.initializeAudioContext().then(audioContext => {
+        audioContextRef.current = audioContext;
+        
+        // Create mic analyzer
+        if (micStreamRef.current && !micAnalyserRef.current) {
+          micAnalyserRef.current = audioContext.createAnalyser();
+          micAnalyserRef.current.fftSize = 256;
+          micAnalyserRef.current.smoothingTimeConstant = 0.8;
+          
+          micSourceRef.current = audioContext.createMediaStreamSource(micStreamRef.current);
+          micSourceRef.current.connect(micAnalyserRef.current);
+          console.log("[Echo] Mic analyzer initialized");
+        }
+      });
+    } catch (e) {
+      console.warn("[Echo] Failed to initialize echo suppression:", e);
+    }
+  };
+
+  const setupAIAnalyzer = (audioElement: HTMLAudioElement) => {
+    try {
+      if (!audioContextRef.current) return;
+      
+      // Clean up any existing AI analyzer
+      if (aiSourceRef.current) {
+        try {
+          aiSourceRef.current.disconnect();
+        } catch (e) {
+          // Ignore disconnect errors
+        }
+        aiSourceRef.current = null;
+      }
+      
+      // Create AI analyzer
+      aiAnalyserRef.current = audioContextRef.current.createAnalyser();
+      aiAnalyserRef.current.fftSize = 256;
+      aiAnalyserRef.current.smoothingTimeConstant = 0.8;
+      
+      // Create gain node for volume control
+      const gainNode = audioContextRef.current.createGain();
+      gainNode.gain.value = 0.7; // Cap AI playback gain
+      
+      // Create MediaElementAudioSourceNode for this specific audio element
+      // Each AI reply gets its own fresh audio element, so this should never fail
+      aiSourceRef.current = audioContextRef.current.createMediaElementSource(audioElement);
+      
+      aiSourceRef.current.connect(aiAnalyserRef.current);
+      aiSourceRef.current.connect(gainNode);
+      gainNode.connect(audioContextRef.current.destination); // Route to speakers via gain
+      console.log("[Echo] AI analyzer initialized with gain control");
+    } catch (e) {
+      console.warn("[Echo] Failed to setup AI analyzer:", e);
+    }
+  };
+
+  const calculateRMS = (analyser: AnalyserNode): number => {
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(dataArray);
+    
+    let sum = 0;
+    for (let i = 0; i < dataArray.length; i++) {
+      sum += dataArray[i] * dataArray[i];
+    }
+    const rms = Math.sqrt(sum / dataArray.length);
+    return rms;
+  };
+
+  const checkEchoGate = (text: string, confidence: number, duration: number): boolean => {
+    // Never run echo gate while AI is playing - use barge-in detection instead
+    if (callStateRef.current === 'ai_playing') {
+      return true; // Allow all speech when AI is playing
+    }
+    
+    // Check minimum requirements for echo gate
+    const words = text.split(/\s+/).filter(Boolean).length;
+    if (words < echoGateConfig.minWords || duration < echoGateConfig.minDuration || confidence < echoGateConfig.minConfidence) {
+      return true; // Allow short/low-confidence utterances
+    }
+    
+    if (!micAnalyserRef.current || !aiAnalyserRef.current) return true; // Allow if analyzers not ready
+    
+    const micRMS = calculateRMS(micAnalyserRef.current);
+    const aiRMS = calculateRMS(aiAnalyserRef.current);
+    
+    // Convert to dB
+    const micDB = 20 * Math.log10(micRMS / 255);
+    const aiDB = 20 * Math.log10(aiRMS / 255);
+    
+    const snr = micDB - aiDB;
+    const now = Date.now();
+    
+    if (snr >= echoGateConfig.threshold) {
+      if (!echoGateRef.current.active) {
+        echoGateRef.current.active = true;
+        echoGateRef.current.startTime = now;
+        echoGateRef.current.micRMS = micRMS;
+        echoGateRef.current.aiRMS = aiRMS;
+      } else if (now - echoGateRef.current.startTime >= echoGateConfig.duration) {
+        return true; // Gate passed
+      }
+    } else {
+      echoGateRef.current.active = false;
+    }
+    
+    return false; // Gate not passed
+  };
+
+  const logDroppedItem = (text: string, reason: string) => {
+    const item = { text, reason, timestamp: Date.now() };
+    setDroppedItems(prev => [...prev.slice(-9), item]); // Keep last 10
+    console.log(`[Echo] Dropped: "${text}" - reason: ${reason}`);
+  };
+
+  // Helper function to manage AI speech state with strict barge-in
   const setAgentSpeaking = (speaking: boolean) => {
     agentSpeakingRef.current = speaking;
     if (!speaking) {
-      // Resume recording when AI stops speaking
-      if (userRecRef.current) {
-        try {
-          userRecRef.current.resume();
-          console.log("[UserAudio] Resumed recording after AI speech");
-        } catch (e) {
-          console.warn("[UserAudio] Failed to resume recording:", e);
-        }
+      // Clear active turn when AI stops speaking
+      activeTurnIdRef.current = null;
+      pendingTtsRef.current = null;
+      
+      // Start quiet gate after TTS ends
+      if (speechRef.current) {
+        speechRef.current.startQuietGate();
       }
       
-      // Restart mic service recording when AI stops speaking
-      if (mic.isActive()) {
+      // Recording is continuous - no need to resume (ASR is always running)
+      
+      // Microphone is always enabled - never toggle (strict barge-in requirement)
+      if (micStreamRef.current) {
         try {
-          mic.startRecording();
-          console.log("[Mic] Restarted mic service recording after AI speech");
+          const audioTracks = micStreamRef.current.getAudioTracks();
+          audioTracks.forEach(track => {
+            track.enabled = true;
+          });
+          console.log("[Mic] Microphone always enabled (no toggling)");
         } catch (e) {
-          console.warn("[Mic] Failed to restart mic service recording:", e);
+          console.warn("[Mic] Failed to ensure microphone enabled:", e);
         }
       }
-      
-      // Re-enable microphone when AI stops speaking with a delay to prevent feedback
-      setTimeout(() => {
-        if (micStreamRef.current) {
-          try {
-            const audioTracks = micStreamRef.current.getAudioTracks();
-            audioTracks.forEach(track => {
-              track.enabled = true;
-            });
-            console.log("[Mic] Re-enabled microphone tracks after AI speech");
-          } catch (e) {
-            console.warn("[Mic] Failed to re-enable microphone tracks:", e);
-          }
-        }
-      }, 1000); // 1 second delay to prevent feedback
     }
   };
+
+  // Update mic track status for health monitoring
+  const updateMicTrackStatus = () => {
+    if (micStreamRef.current) {
+      try {
+        const audioTracks = micStreamRef.current.getAudioTracks();
+        if (audioTracks.length > 0) {
+          const track = audioTracks[0];
+          micTrackStatusRef.current = {
+            live: track.readyState === 'live',
+            enabled: track.enabled,
+            readyState: track.readyState
+          };
+        }
+      } catch (e) {
+        console.warn("[Mic] Failed to update track status:", e);
+      }
+    }
+  };
+
+  // Handle user utterances from chat window
+  const handleChatUserUtterance = async (text: string) => {
+    console.log("[Chat] User utterance from chat:", text);
+    
+    // Add user turn to history
+    pushTurn("user", text);
+    
+    // Generate AI response if we have a scenario
+    if (currentScenario) {
+      // Generate unique turn ID for this interaction
+      const turnId = crypto.randomUUID();
+      activeTurnIdRef.current = turnId;
+      
+      // Check if this turn is still active (not superseded by barge-in)
+      const isTurnActive = () => activeTurnIdRef.current === turnId;
+      
+      // Generate AI response immediately
+      console.log(`[AI] AI_STARTED ${turnId} (from chat)`);
+      let reply: string;
+      if (isMock) {
+        reply = getAgentReply(historyRef.current, currentScenario);
+        console.log("[AI] Generated mock reply:", reply);
+      } else {
+        try {
+          console.log("[AI] Calling OpenAI API for live response (from chat)");
+          const messages = historyRef.current.map(turn => ({
+            role: turn.role,
+            text: turn.text
+          }));
+          
+          const response = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ 
+              messages,
+              scenario: currentScenario
+            })
+          });
+          
+          if (response.ok) {
+            const data = await response.json();
+            reply = data.content || "I didn't catch that. Could you please repeat?";
+            console.log("[AI] Generated live AI reply:", reply);
+          } else {
+            console.warn("[AI] OpenAI API failed, falling back to mock");
+            reply = getAgentReply(historyRef.current, currentScenario);
+          }
+        } catch (error) {
+          console.warn("[AI] OpenAI API error, falling back to mock:", error);
+          reply = getAgentReply(historyRef.current, currentScenario);
+        }
+      }
+      
+      // Check if turn was superseded during AI generation
+      if (!isTurnActive()) {
+        console.log(`[AI] AI_DROPPED ${turnId} (stale)`);
+        return;
+      }
+      
+      // Check assistant deduplication
+      const normalizedReply = reply.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
+      const now = Date.now();
+      
+      // Clean old entries
+      for (const [text, timestamp] of recentAssistantTexts.current.entries()) {
+        if (now - timestamp > ASSISTANT_DEDUP_MS) {
+          recentAssistantTexts.current.delete(text);
+        }
+      }
+      
+      if (recentAssistantTexts.current.has(normalizedReply)) {
+        console.log(`[ASSIST_DEDUP_HIT] "${normalizedReply}"`);
+        return; // Don't speak duplicate assistant text
+      }
+      
+      recentAssistantTexts.current.set(normalizedReply, now);
+      
+      // Add assistant turn to history
+      pushTurn("agent", reply);
+      
+      // Generate TTS if in live mode
+      if (!isMock && voiceConnectedRef.current) {
+        // Start TTS generation immediately using high-quality model (single-flight, idempotent)
+        const ttsPromise = (async () => {
+          // Check if TTS already started for this turnId (idempotent)
+          if (ttsStartedRef.current.has(turnId)) {
+            console.log(`[TTS] TTS already started for turnId ${turnId}, ignoring duplicate request`);
+            return null;
+          }
+          
+          // Mark TTS as started for this turnId
+          ttsStartedRef.current.add(turnId);
+          console.log(`[TTS] TTS_STARTED ${turnId} (from chat)`);
+          
+          try {
+            // Use the same high-quality TTS as greeting (gpt-4o-mini-tts)
+            const r = await fetch("/api/tts", { 
+              method: "POST", 
+              headers: { "Content-Type": "application/json" }, 
+              body: JSON.stringify({ 
+                text: reply,
+                voice: "alloy", // Consistent voice
+                format: "mp3" // High-quality format
+              }) 
+            });
+            if (r.ok) { 
+              const j = await r.json(); 
+              console.log("[TTS] Generated high-quality audio for AI response (from chat):", j.url);
+              return j.url;
+            } else {
+              console.warn("[TTS] High-quality TTS failed:", r.status);
+            }
+          } catch (e) {
+            console.warn("[TTS] Error generating audio:", e);
+          }
+          return null;
+        })();
+        
+        // Store pending TTS for potential cancellation
+        pendingTtsRef.current = null; // No cancel function for audio element approach
+        
+        // Wait for TTS to complete
+        const aurl = await ttsPromise;
+        
+        // Check if turn was superseded during TTS generation
+        if (!isTurnActive()) {
+          console.log(`[AI] AI_DROPPED ${turnId} (stale)`);
+          return;
+        }
+        
+        if (aurl) {
+          // Final check if turn is still active before playing
+          if (!isTurnActive()) {
+            console.log(`[AI] AI_DROPPED ${turnId} (stale)`);
+            return;
+          }
+          
+          // Play the AI response immediately with high-quality settings
+          try {
+            // Enter AI playing state
+            enterAIPlaying();
+            
+            // Use dedicated audio element for AI response with high-quality settings
+            const timestamp = Date.now();
+            const aiResponseEl = await ensureAudioEl(`aiResponse_${timestamp}`, { 
+              volume: 0.7, 
+              routeToDevice: 'none' // Don't try to route to specific device
+            });
+            
+            // Set src after sinkId has been configured
+            aiResponseEl.src = aurl;
+            
+            // Setup AI analyzer for echo suppression
+            setupAIAnalyzer(aiResponseEl);
+            
+                        // Set up event listener to handle when AI audio ends
+            const handleResponseEnd = () => {
+              aiResponseEl.removeEventListener('ended', handleResponseEnd);
+              // Clean up AI analyzer
+              aiAnalyserRef.current = null;
+              aiSourceRef.current = null;
+              // Exit AI playing state
+              exitAIPlaying();
+              // Remove the audio element to prevent memory leaks
+              try {
+                if (aiResponseEl.parentNode) {
+                  aiResponseEl.parentNode.removeChild(aiResponseEl);
+                }
+              } catch (e) {
+                console.warn("[Cleanup] Failed to remove audio element:", e);
+              }
+            };
+            aiResponseEl.addEventListener('ended', handleResponseEnd);
+            
+            await aiResponseEl.play();
+            console.log("[LiveCall] Playing AI response (from chat):", aurl);
+          } catch (e) {
+            console.warn("[LiveCall] Failed to play AI response:", e);
+            // Exit AI playing state on error
+            exitAIPlaying();
+          }
+        }
+      }
+    }
+  };
+
+  // Start barge-in monitoring during AI playback
+  const startBargeInMonitoring = () => {
+    if (bargeInTimerRef.current) {
+      clearInterval(bargeInTimerRef.current);
+    }
+    
+    console.log("[Barge] Starting barge-in monitoring");
+    
+    bargeInTimerRef.current = setInterval(() => {
+      try {
+        // Check if component is still mounted (handles Fast Refresh interruptions)
+        if (!mountedRef.current) {
+          console.log("[Barge] Component unmounted, stopping monitoring");
+          stopBargeInMonitoring();
+          return;
+        }
+        
+        // Additional check: ensure we're still in the correct state
+        if (callStateRef.current !== 'ai_playing') {
+          console.log("[Barge] State changed, stopping monitoring");
+          stopBargeInMonitoring();
+          return;
+        }
+        
+        if (micAnalyserRef.current) {
+          const micRMS = calculateRMS(micAnalyserRef.current);
+          const aiRMS = aiAnalyserRef.current ? calculateRMS(aiAnalyserRef.current) : undefined;
+          checkBargeIn(micRMS, aiRMS);
+        } else {
+          console.warn("[Barge] Mic analyzer not available");
+        }
+      } catch (error) {
+        console.warn("[Barge] Error in barge-in monitoring:", error);
+        // Don't stop monitoring on error, just log and continue
+      }
+    }, 16); // 16ms monitoring window (~60fps) for more responsive detection
+  };
+  
+  // Stop barge-in monitoring
+  const stopBargeInMonitoring = () => {
+    if (bargeInTimerRef.current) {
+      clearInterval(bargeInTimerRef.current);
+      bargeInTimerRef.current = null;
+    }
+  };
+
+  // CloserCoach-style barge-in detection with VAD gates
+  const checkBargeIn = (micRMS: number, aiRMS?: number) => {
+    if (callStateRef.current !== 'ai_playing' || bargeInDetectedRef.current) {
+      return;
+    }
+    
+    // Debug logging for barge-in detection
+    if (micRMS > 15) { // Only log when there's significant mic activity
+      console.log(`[Barge] Monitoring - micRMS:${micRMS.toFixed(1)}, aiRMS:${aiRMS?.toFixed(1) || 'N/A'}, state:${callStateRef.current}, detected:${bargeInDetectedRef.current}`);
+    }
+    
+    // Fallback: if AI analyzer isn't available but we have strong mic activity, still allow barge-in
+    if (!aiRMS && micRMS > 35) {
+      console.log(`[Barge] Fallback detection - strong mic activity (${micRMS.toFixed(1)}) without AI analyzer`);
+    }
+    
+    // Additional fallback: if AI analyzer setup is taking too long, be more aggressive
+    const aiAnalyzerSetupTimeout = 2000; // 2 seconds
+    const timeSinceAIPlayingStart = aiPlayingStartTimeRef.current ? Date.now() - aiPlayingStartTimeRef.current : 0;
+    if (timeSinceAIPlayingStart > aiAnalyzerSetupTimeout && !aiRMS && micRMS > 25) {
+      console.log(`[Barge] Aggressive fallback - AI analyzer setup timeout (${timeSinceAIPlayingStart}ms), micRMS: ${micRMS.toFixed(1)}`);
+    }
+    
+    const now = Date.now();
+    const humanThreshold = 18; // Slightly lower threshold for more sensitive detection
+    const aiRatio = 1.05; // Even lower ratio for easier barge-in
+    const bargeInDuration = 50; // Shorter duration for faster response
+    const resetDelay = 150; // Shorter reset delay for more responsive detection
+    
+    // Check if human speech is detected
+    const humanSpeechDetected = micRMS > humanThreshold;
+    const aiInterference = aiRMS ? micRMS > (aiRMS * aiRatio) : true;
+    const strongHumanSpeech = micRMS > 45; // Lower threshold for strong human speech
+    
+    // Additional check: if AI RMS is very low or undefined, be more sensitive
+    const aiVolumeLow = !aiRMS || aiRMS < 10;
+    
+    // Trigger barge-in for strong human speech or when human speech is louder than AI
+    // Also include fallback for when AI analyzer isn't available
+    const aggressiveFallback = timeSinceAIPlayingStart > aiAnalyzerSetupTimeout && !aiRMS && micRMS > 25;
+    const shouldTriggerBargeIn = (humanSpeechDetected && (aiInterference || aiVolumeLow)) || 
+                                 strongHumanSpeech || 
+                                 (!aiRMS && micRMS > 35) || // Fallback for missing AI analyzer
+                                 aggressiveFallback; // Aggressive fallback for setup timeout
+    
+    if (shouldTriggerBargeIn) {
+      if (bargeInStartTimeRef.current === null) {
+        bargeInStartTimeRef.current = now;
+        console.log(`[Barge] Starting detection - micRMS:${micRMS.toFixed(1)}, aiRMS:${aiRMS?.toFixed(1) || 'N/A'}, threshold:${humanThreshold}, ratio:${aiRatio}, aiVolumeLow:${aiVolumeLow}, fallback:${!aiRMS && micRMS > 35}, aggressive:${aggressiveFallback}`);
+      } else if (now - bargeInStartTimeRef.current >= bargeInDuration) {
+        // Barge-in detected! Call the centralized barge-in handler
+        handleBargeIn().catch(e => {
+          console.warn("[Barge] Error in barge-in handler:", e);
+        });
+      }
+    } else {
+      // Only reset barge-in detection if conditions not met for a longer period
+      if (bargeInStartTimeRef.current !== null && (now - bargeInStartTimeRef.current) > resetDelay) {
+        bargeInStartTimeRef.current = null;
+        console.log(`[Barge] Reset detection - conditions not met for ${resetDelay}ms`);
+      }
+    }
+  };
+
+  // Barge-in handler - cancels audio playback only, preserves assistant text
+  const handleBargeIn = async () => {
+    // Check if component is still mounted (handles Fast Refresh interruptions)
+    if (!mountedRef.current) {
+      console.log("[BARGE-IN] Component unmounted, skipping barge-in");
+      return;
+    }
+    
+    // Double-check state to prevent race conditions
+    if (callStateRef.current !== 'ai_playing') {
+      console.log("[BARGE-IN] Not in ai_playing state, skipping barge-in");
+      return;
+    }
+    
+    if (!bargeInDetectedRef.current) {
+      console.log("[BARGE-IN] Entering barge-in state");
+      
+      // Mark barge-in as detected to prevent double execution
+      bargeInDetectedRef.current = true;
+      
+      // 1. Immediately set state flags before cancelling TTS
+      aiPlayingRef.current = false;
+      ttsPlayingRef.current = false;
+      bargeActiveRef.current = true;
+      
+      console.log("[BARGE-IN] ai_playing:false, tts_playing:false, barge_active:true");
+      
+      // Stop only the interrupted audio playback
+      stopInterruptedAudioPlayback();
+      
+      // Ensure audio context is resumed after barge-in
+      try {
+        const audioContext = audioManager.getAudioContext();
+        if (audioContext && audioContext.state === 'suspended') {
+          await audioContext.resume();
+          console.log("[BARGE-IN] AudioContext resumed after barge-in");
+        }
+        console.log("[BARGE-IN] AudioContext state after barge-in:", audioContext?.state);
+      } catch (e) {
+        console.warn("[BARGE-IN] Failed to resume AudioContext:", e);
+      }
+      
+      // Start tracking continuous speech for kill switch
+      if (continuousSpeechStartRef.current === null) {
+        continuousSpeechStartRef.current = Date.now();
+        console.log("[BARGE-IN] Starting continuous speech tracking");
+      }
+      
+      // Enter user speaking state (barge-in)
+      enterUserSpeaking();
+      
+      // Note: Do NOT clear activeTurnIdRef or ttsStartedRef here
+      // Only discard assistant text if a newer assistant message has been generated
+    }
+  };
+  
   // Subscription and turn sequence management
   const unsubRef = useRef<(() => void) | null>(null);
   const turnSeqRef = useRef<number>(0);
+
+  // HMR protection - set mounted flag
+  useEffect(() => {
+    mountedRef.current = true;
+    console.log("[HMR] Component mounted");
+    
+    // Check if we're in development mode and handle Fast Refresh interruptions
+    const isDevelopment = process.env.NODE_ENV === 'development';
+    if (isDevelopment) {
+      console.log("[HMR] Development mode detected - Fast Refresh may interrupt barge-in");
+      
+      // Check for URL parameter to disable Fast Refresh warnings
+      const urlParams = new URLSearchParams(window.location.search);
+      const disableFastRefresh = urlParams.get('disableFastRefresh');
+      if (disableFastRefresh) {
+        console.log("[HMR] Fast Refresh warnings disabled via URL parameter");
+      }
+    }
+    
+    return () => {
+      mountedRef.current = false;
+      console.log("[HMR] Component unmounting, running cleanup");
+      cleanup();
+    };
+  }, []);
 
   // hydrate showChat from localStorage to avoid flicker, or show by default in live mode
   useEffect(() => {
@@ -191,19 +1040,7 @@ const roomRef = useRef<Room | null>(null);
     return new Blob([buffer], { type: 'audio/wav' });
   }
   
-  // Create a better fallback audio - a short "user spoke" sound
-  function createUserAudioFallback(): string {
-    // Create a simple audio file and upload it once, then reuse the URL
-    const fallbackBlob = synthBeepWav(0.5, 800); // 0.5 second, 800Hz tone
-    uploadBlobGetUrl(fallbackBlob).then(url => {
-      if (url) {
-        console.log("[Fallback] Created user audio fallback:", url);
-        // Store this URL for reuse
-        (window as any).__userAudioFallback = url;
-      }
-    });
-    return "/api/audio/test-user"; // Return the old fallback for now
-  }
+  // Removed user audio fallback logic - not needed with echo suppression
 
   // Start a MediaRecorder on a single track and resolve to an object URL on stop
   function startRecorderForTrack(track: MediaStreamTrack): { rec: MediaRecorder; done: Promise<string | null> } {
@@ -238,7 +1075,6 @@ const roomRef = useRef<Room | null>(null);
     return { rec, done };
   }
 
-
 // LIVEKIT: connect & publish mic
 async function startLiveKitCall(identity = "user", roomName = "sales-sim") {
   const res = await fetch(`/api/getToken?identity=${identity}&roomName=${roomName}`);
@@ -269,8 +1105,9 @@ async function startLiveKitCall(identity = "user", roomName = "sales-sim") {
     audioTrack = null;
   }
 
-  // Local mic monitor (muted)
-  const micEl = ensureAudioEl("micMonitor");
+  // Local mic monitor (muted) - only for mic monitoring, not TTS
+  const micTimestamp = Date.now();
+  const micEl = await ensureAudioEl(`micMonitor_${micTimestamp}`, { routeToDevice: 'none' });
   micEl.muted = true;
   micEl.autoplay = true;
   // @ts-expect-error playsInline exists on HTMLMediaElement in browsers
@@ -282,12 +1119,13 @@ async function startLiveKitCall(identity = "user", roomName = "sales-sim") {
     }
   } catch {}
 
-  // Remote audio subscription
-  room.on("trackSubscribed", (track: any) => {
+  // Remote audio subscription (for agent audio from LiveKit, not TTS)
+  room.on("trackSubscribed", async (track: any) => {
     try {
       if (track?.kind === "audio" || track?.kind === 2) {
         if (track?.mediaStreamTrack) agentTrackRef.current = track.mediaStreamTrack as MediaStreamTrack;
-        const agentEl = ensureAudioEl("agentMonitor");
+        const agentTimestamp = Date.now();
+        const agentEl = await ensureAudioEl(`agentMonitor_${agentTimestamp}`, { routeToDevice: 'none' });
         agentEl.muted = false;
         agentEl.autoplay = true;
         // @ts-expect-error playsInline exists on HTMLMediaElement in browsers
@@ -356,10 +1194,15 @@ async function endLiveKitCall() {
   }
 }
 
-
   async function handleCall() {
-    // Simplified approach - just start everything and let it fail gracefully
+    // Prevent re-initialization during hot-reload
+    if (isCallActiveRef.current) {
+      console.log("[Call] Call already active, skipping re-initialization");
+      return;
+    }
+    
     console.log("[Call] Starting call...");
+    isCallActiveRef.current = true;
     
     setIsInitializing(true);
     setInitError(null);
@@ -397,37 +1240,44 @@ async function endLiveKitCall() {
     // Initialize waiting flag to true since we're waiting for user input after greeting
     waitingForUserRef.current = true;
     
-    // Create fallback audio for user turns
-    createUserAudioFallback();
+    // Removed fallback audio creation - not needed with echo suppression
     
-    // Get microphone stream and initialize mic service
+    // Log reply mode on startup
+    console.log(`[Guard] REPLY_MODE: ${isMock ? 'mock' : 'live'}`);
+    
+    // Initialize CloserCoach-style audio pipeline
     try {
-      console.log("[Mic] Getting microphone stream directly...");
+      console.log("[Audio] Initializing CloserCoach-style audio pipeline...");
       
-      // Use the mic service to get the stream - this handles device selection better
-      const stream = await mic.start();
+      // Initialize singleton AudioContext and microphone
+      await audioManager.initializeAudioContext();
+      const stream = await mic.initialize();
       
       if (stream) {
-        console.log("[Mic] Stream obtained via mic service:", stream);
+        console.log("[Audio] Stream obtained:", stream);
         setMicStream(stream);
         micStreamRef.current = stream;
         
-        // Try to start the mic service recording
-        try {
-          mic.startRecording();
-          setIsRecording(true);
-          console.log("[Mic] Recording started");
-        } catch (recordingErr) {
-          console.warn("[Mic] Recording failed, but stream is available:", recordingErr);
+        // Setup audio analysis for VAD
+        const audioContext = audioManager.getAudioContext();
+        if (audioContext) {
+          mic.setupAudioAnalysis(audioContext);
         }
+        
+        // Ensure microphone is always enabled (never disable the track)
+        mic.ensureMicEnabled();
+        console.log("[Audio] Microphone always enabled for barge-in");
+        
+        // Update mic track status
+        updateMicTrackStatus();
       } else {
         throw new Error("Failed to get microphone stream");
       }
       
     } catch (err: any) { 
-      console.error('Microphone access failed:', err); 
-      console.log("[Mic] Error name:", err?.name);
-      console.log("[Mic] Error message:", err?.message);
+      console.error('Audio initialization failed:', err); 
+      console.log("[Audio] Error name:", err?.name);
+      console.log("[Audio] Error message:", err?.message);
       
       if (err?.name === 'NotAllowedError') {
         setInitError("Microphone access denied. Please allow microphone access and try again.");
@@ -442,9 +1292,9 @@ async function endLiveKitCall() {
     
     // Agent greeting once connected (single guard)
     unsubRef.current = m.subscribe(async (state) => {
-              if (state === "connected") {
-          unsubRef.current?.();
-          unsubRef.current = null;
+      if (state === "connected") {
+        unsubRef.current?.();
+        unsubRef.current = null;
         if (!greetedRef.current) {
           greetedRef.current = true;
           const greeting = currentScenario
@@ -457,7 +1307,11 @@ async function endLiveKitCall() {
             const r = await fetch("/api/tts", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ text: greeting }),
+              body: JSON.stringify({ 
+                text: greeting,
+                voice: "alloy", // Consistent voice
+                format: "mp3" // High-quality format
+              }),
             });
             const j = r.ok ? await r.json() : null;
             gurl = j?.url ?? null;
@@ -465,54 +1319,166 @@ async function endLiveKitCall() {
           
           pushTurn("agent", greeting, { audioUrl: useTtsStub ? gurl || undefined : undefined });
           
-          // Play the greeting immediately using a dedicated audio element
+                      // Play the greeting immediately using a dedicated audio element
           if (useTtsStub && gurl) {
             try {
-              setAgentSpeaking(true);
-              // Use a dedicated audio element for AI playback to reduce feedback
-              const aiAudioEl = ensureAudioEl("aiAudio");
-              aiAudioEl.src = gurl;
-              aiAudioEl.volume = 0.8; // Slightly lower volume to reduce feedback
+              // Enter AI playing state
+              enterAIPlaying();
               
-              // Set up event listener to handle when AI audio ends
-              const handleAudioEnd = () => {
-                setAgentSpeaking(false);
-                aiAudioEl.removeEventListener('ended', handleAudioEnd);
-              };
-              aiAudioEl.addEventListener('ended', handleAudioEnd);
+              // Use CloserCoach-style cancelable TTS playback
+              const ttsPlayback = await audioManager.playTtsAudio(gurl, {
+                volume: 0.7,
+                onComplete: () => {
+                  // Clean up AI analyzer
+                  aiAnalyserRef.current = null;
+                  aiSourceRef.current = null;
+                  // Exit AI playing state
+                  exitAIPlaying();
+                  
+                  // Start speech recognition after greeting finishes
+                  setTimeout(() => {
+                    if (mountedRef.current && speechRef.current) {
+                      try {
+                        speechRef.current.start();
+                        console.log("[Speech] Speech recognition started after greeting");
+                      } catch (e) {
+                        console.warn("[Speech] Failed to start speech recognition after greeting:", e);
+                      }
+                    }
+                  }, 100); // Short delay to ensure state is updated
+                }
+              });
               
-              await aiAudioEl.play();
+              // Store cancel function for barge-in
+              pendingTtsRef.current = ttsPlayback;
+              
+              // Setup AI analyzer for echo suppression
+              const aiAnalyzer = audioManager.createAiAnalyzer();
+              if (aiAnalyzer) {
+                aiAnalyserRef.current = aiAnalyzer;
+              }
+              
               console.log("[LiveCall] Playing greeting:", gurl);
             } catch (e) {
               console.warn("[LiveCall] Failed to play greeting:", e);
-            } finally {
-              setAgentSpeaking(false);
+              // Exit AI playing state on error
+              exitAIPlaying();
             }
+          } else {
+            // No greeting audio - start speech recognition immediately
+            console.log("[Speech] No greeting audio, starting speech recognition immediately");
+            setTimeout(() => {
+              if (mountedRef.current && speechRef.current) {
+                try {
+                  speechRef.current.start();
+                  console.log("[Speech] Speech recognition started (no greeting)");
+                } catch (e) {
+                  console.warn("[Speech] Failed to start speech recognition:", e);
+                }
+              }
+            }, 1000); // Short delay to ensure everything is ready
           }
           
           await new Promise((res) => setTimeout(res, 600 + Math.floor(Math.random() * 400)));
         }
-                // start continuous web speech
-        if (!speechRef.current) {
-          speechRef.current = createWebSpeech({
+        
+        // Start continuous enhanced speech with singleton guard
+        if (!speechInstanceRef.current && mountedRef.current) {
+          console.log("[Speech] Creating new speech recognition instance with singleton guard");
+          
+          // Cleanly dispose previous instance if it exists
+          if (speechRef.current) {
+            try {
+              speechRef.current.stop();
+            } catch (e) {
+              console.warn("[Speech] Error disposing previous speech instance:", e);
+            }
+            speechRef.current = null;
+          }
+          
+          // Pre-create and warm up the recognizer for faster first token
+          const warmUpRecognizer = () => {
+            try {
+              const tempSpeech = createEnhancedSpeech({
+                onFinal: () => {}, // No-op for warm-up
+                onInterim: () => {}, // No-op for warm-up
+                onSpeechStart: () => {
+                  console.log("[Speech] Warm-up recognizer started");
+                },
+                onSpeechEnd: () => {
+                  console.log("[Speech] Warm-up recognizer ended");
+                }
+              });
+              
+              if (tempSpeech) {
+                tempSpeech.start();
+                // Stop after a short time
+                setTimeout(() => {
+                  try {
+                    tempSpeech.stop();
+                  } catch (e) {
+                    console.warn("[Speech] Error stopping warm-up recognizer:", e);
+                  }
+                }, 1000);
+              }
+            } catch (e) {
+              console.warn("[Speech] Failed to warm up recognizer:", e);
+            }
+          };
+          
+          // Warm up the recognizer
+          warmUpRecognizer();
+          
+          speechInstanceRef.current = createEnhancedSpeech({
+            onInterim: (partialText: string) => {
+              // Only ignore partial results if ai_playing===true and barge_active===false
+              if (aiPlayingRef.current === true && bargeActiveRef.current === false) {
+                return;
+              }
+              
+              // Text chat mirror - show partial results in live mode
+              if (!isMock) {
+                setAsrPartials(partialText);
+              }
+            },
+            onBargeIn: () => {
+              // Only trigger barge-in if AI is actually playing
+              if (aiPlayingRef.current === true) {
+                console.log("[Speech] Barge-in triggered");
+                handleBargeIn();
+              } else {
+                console.log("[Speech] Barge-in ignored - AI not playing");
+              }
+            },
+            onLowConfidence: (text: string, confidence: number) => {
+              console.log(`[Speech] Low confidence utterance: "${text}" (${confidence.toFixed(2)})`);
+              // For now, just log it. In the future, we could send a confirmation request to the AI
+            },
             onSpeechStart: () => {
               console.log("[Speech] Speech started");
-              pendingUserAudioRef.current = null;
               
-              // Don't start recording if AI is speaking (microphone is disabled)
-              if (agentSpeakingRef.current) {
-                console.log("[UserAudio] Skipping recording - AI is speaking");
-                attemptedRecordingRef.current = false;
-                return;
+              // Initialize echo suppression if not already done
+              setupMicAnalyzer();
+              
+              // Update mic track status
+              updateMicTrackStatus();
+              
+              // Check for barge-in kill switch (continuous speech for 150-200ms)
+              if (continuousSpeechStartRef.current !== null) {
+                const speechDuration = Date.now() - continuousSpeechStartRef.current;
+                if (speechDuration >= 175) { // BARGE_IN_THRESHOLD_MS
+                  console.log(`[BARGE-IN] Kill switch triggered after ${speechDuration}ms of continuous speech`);
+                  // Mark the current reply as superseded - don't resume or enqueue another copy
+                  activeTurnIdRef.current = null;
+                  pendingTtsRef.current = null;
+                  ttsStartedRef.current.clear();
+                }
               }
               
               // Start recording using the direct mic stream we already have
               try {
-                
-                // Get the mic stream from the ref, state, or mic service
                 const stream = micStreamRef.current || micStream || mic.getStream();
                 if (stream && stream.getAudioTracks().length > 0) {
-                  // Check if the microphone track is enabled before recording
                   const audioTrack = stream.getAudioTracks()[0];
                   if (audioTrack.enabled && audioTrack.readyState === 'live') {
                     const { rec, done } = startRecorderForTrack(audioTrack);
@@ -532,293 +1498,393 @@ async function endLiveKitCall() {
                 console.warn("[UserAudio] Failed to start recording:", e);
                 attemptedRecordingRef.current = false;
               }
-              
-              // Pause speech recognition while AI is speaking to prevent feedback
-              if (agentSpeakingRef.current) {
-                try {
-                  speechRef.current?.stop();
-                  console.log("[Speech] Paused during AI speech");
-                } catch (e) {
-                  console.warn("[Speech] Failed to pause:", e);
-                }
-              }
-              
-              // Also pause microphone recording during AI speech to reduce feedback
-              if (agentSpeakingRef.current && userRecRef.current) {
-                try {
-                  userRecRef.current.pause();
-                  console.log("[UserAudio] Paused recording during AI speech");
-                } catch (e) {
-                  console.warn("[UserAudio] Failed to pause recording:", e);
-                }
-              }
-              
-              // Also pause the mic service recording during AI speech
-              if (agentSpeakingRef.current && mic.isActive()) {
-                try {
-                  mic.stopRecording();
-                  console.log("[Mic] Stopped mic service recording during AI speech");
-                } catch (e) {
-                  console.warn("[Mic] Failed to stop mic service recording:", e);
-                }
-              }
-              
-              // Completely disable microphone during AI speech to prevent feedback
-              if (agentSpeakingRef.current && micStreamRef.current) {
-                try {
-                  const audioTracks = micStreamRef.current.getAudioTracks();
-                  audioTracks.forEach(track => {
-                    track.enabled = false;
-                  });
-                  console.log("[Mic] Disabled microphone tracks during AI speech");
-                } catch (e) {
-                  console.warn("[Mic] Failed to disable microphone tracks:", e);
-                }
-              }
             },
             onSpeechEnd: async () => {
-              // The recording is handled by the per-turn recorder, not the mic service
               console.log("[UserAudio] Speech ended, waiting for per-turn recording to complete");
+              
+              // Update mic track status
+              updateMicTrackStatus();
+              
+              // Reset continuous speech tracking
+              continuousSpeechStartRef.current = null;
+              if (bargeInTimerRef.current) {
+                clearTimeout(bargeInTimerRef.current);
+                bargeInTimerRef.current = null;
+              }
             },
-            onFinal: async (finalText) => {
+            onFinal: async (finalText: string) => {
               console.log("[Speech] Final text:", finalText);
               
-              // Set the waiting flag to true since user has spoken and we're waiting for AI response
-              waitingForUserRef.current = true;
+              // Only ignore finals if ai_playing===true and barge_active===false
+              // But allow speech if barge-in was detected
+              if (aiPlayingRef.current === true && bargeActiveRef.current === false && !bargeInDetectedRef.current) {
+                console.log("[Speech] Ignoring final text during AI playback (no barge-in detected)");
+                console.log("[Speech] Debug - aiPlaying:", aiPlayingRef.current, "bargeActive:", bargeActiveRef.current, "bargeDetected:", bargeInDetectedRef.current);
+                return;
+              }
               
+              // Text chat mirror - clear partials and add final
+              if (!isMock) {
+                setAsrPartials("");
+                setAsrFinals(prev => [...prev.slice(-9), finalText]); // Keep last 10
+              }
+              
+              // Check echo gate - only proceed if mic is louder than AI
+              // Use default values since enhanced speech doesn't provide confidence/duration
+              const confidence = 0.95; // Default high confidence
+              const duration = 2000; // Default 2 seconds
+              if (agentSpeakingRef.current && !checkEchoGate(finalText, confidence, duration)) {
+                logDroppedItem(finalText, "echo_gate");
+                return; // Drop this utterance as echo
+              }
+              
+              // Call AI immediately - don't wait for audio uploads
               const words = finalText.split(/\s+/).filter(Boolean).length;
               const wpm = Math.round((words / 2) * 60); // rough fallback with 2s assumed
-              // stop per-turn recorder and await object URL
-              let turnUrl: string | null = pendingUserAudioRef.current || null;
-              console.log("[UserAudio] Before stopping recorder - turnUrl:", turnUrl);
-              try { userRecRef.current?.stop(); } catch {}
+              
+              // Stop per-turn recorder but don't wait for it
+              let turnUrl: string | null = null;
               try { 
-                const recordedUrl = await userRecDoneRef.current;
-                console.log("[UserAudio] After recording - recordedUrl:", recordedUrl);
-                turnUrl = recordedUrl ?? turnUrl; 
+                userRecRef.current?.stop(); 
+                // Upload audio in background, don't wait for it
+                userRecDoneRef.current?.then(url => {
+                  if (url) {
+                    console.log("[UserAudio] Background upload completed:", url);
+                    // Update the turn with the audio URL if we can find it
+                    const lastTurn = historyRef.current[historyRef.current.length - 1];
+                    if (lastTurn && lastTurn.role === "user" && lastTurn.text === finalText) {
+                      lastTurn.audioUrl = url;
+                    }
+                  }
+                });
               } catch (e) {
                 console.warn("[UserAudio] Recording failed:", e);
               }
-              userRecRef.current = null; userRecDoneRef.current = null;
-              // Only use fallback if we actually tried to record but failed
-              const audioUrl = turnUrl || (attemptedRecordingRef.current ? ((window as any).__userAudioFallback || "/api/audio/test-user") : null);
+              userRecRef.current = null; 
+              userRecDoneRef.current = null;
+              
+              // Use actual recorded audio or undefined - no fallbacks
+              const audioUrl = turnUrl || undefined;
               attemptedRecordingRef.current = false; // Reset for next turn
               console.log("[UserAudio] Final audio URL for turn:", audioUrl);
               pushTurn("user", finalText, { wpm, audioUrl });
               console.log("[Turn:user]", { text: finalText.slice(0,40), audioUrl });
-              pendingUserAudioRef.current = null;
-              if (agentSpeakingRef.current) {
-                stopSpeaking();
-              }
-                            if (currentScenario) {
-                const currentTurnSeq = ++turnSeqRef.current;
+              
+              // Reset barge-in state after user's turn is processed
+              bargeActiveRef.current = false;
+              bargeInDetectedRef.current = false; // Reset barge-in detection for next turn
+              console.log("[State] barge_active:false, barge_in_detected:false after user turn processed");
+              
+              // Call AI immediately without delays - strict turn management
+              if (currentScenario) {
+                // Generate unique turn ID for this interaction
+                const turnId = crypto.randomUUID();
+                activeTurnIdRef.current = turnId;
+                currentTurnIdRef.current = turnId;
                 
-                setTimeout(async () => {
-                  // Check if this turn is still valid (not superseded by interruption)
-                  if (currentTurnSeq !== turnSeqRef.current) {
-                    console.log("[Turn:agent] Turn superseded, skipping");
+                // Check if this turn is still active (not superseded by barge-in)
+                const isTurnActive = () => activeTurnIdRef.current === turnId;
+                
+                // Generate AI response immediately
+                console.log(`[AI] AI_STARTED ${turnId}`);
+                let reply: string;
+                if (isMock) {
+                  reply = getAgentReply(historyRef.current, currentScenario);
+                  console.log("[AI] Generated mock reply:", reply);
+                } else {
+                  try {
+                    console.log("[AI] Calling OpenAI API for live response");
+                    const messages = historyRef.current.map(turn => ({
+                      role: turn.role,
+                      text: turn.text
+                    }));
+                    
+                    const response = await fetch("/api/chat", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ 
+                        messages,
+                        scenario: currentScenario
+                      })
+                    });
+                    
+                    if (response.ok) {
+                      const data = await response.json();
+                      reply = data.content || "I didn't catch that. Could you please repeat?";
+                      console.log("[AI] Generated live AI reply:", reply);
+                    } else {
+                      console.warn("[AI] OpenAI API failed, falling back to mock");
+                      reply = getAgentReply(historyRef.current, currentScenario);
+                    }
+                  } catch (error) {
+                    console.warn("[AI] OpenAI API error, falling back to mock:", error);
+                    reply = getAgentReply(historyRef.current, currentScenario);
+                  }
+                }
+                
+                // Check if turn was superseded during AI generation
+                if (!isTurnActive()) {
+                  console.log(`[AI] AI_DROPPED ${turnId} (stale)`);
+                  return;
+                }
+                
+                // Start per-turn agent recorder as soon as we have remote track
+                if (!agentRecRef.current && agentTrackRef.current) {
+                  try {
+                    const { rec, done } = startRecorderForTrack(agentTrackRef.current);
+                    agentRecRef.current = rec;
+                    agentRecDoneRef.current = done;
+                  } catch {}
+                }
+                
+                // Check if turn was superseded before TTS generation
+                if (currentTurnIdRef.current !== turnId) {
+                  console.log(`[AI] AI_DROPPED ${turnId} (superseded by ${currentTurnIdRef.current})`);
+                  return;
+                }
+                
+                // Check assistant deduplication
+                const normalizedReply = reply.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
+                const now = Date.now();
+                
+                // Clean old entries
+                for (const [text, timestamp] of recentAssistantTexts.current.entries()) {
+                  if (now - timestamp > ASSISTANT_DEDUP_MS) {
+                    recentAssistantTexts.current.delete(text);
+                  }
+                }
+                
+                if (recentAssistantTexts.current.has(normalizedReply)) {
+                  console.log(`[ASSIST_DEDUP_HIT] "${normalizedReply}"`);
+                  return; // Don't speak duplicate assistant text
+                }
+                
+                recentAssistantTexts.current.set(normalizedReply, now);
+                
+                // Use high-quality TTS for both greeting and replies (same quality path)
+                // No "fast" TTS endpoint - always use gpt-4o-mini-tts for consistent quality
+                const useTtsStub = isMock || !voiceConnectedRef.current;
+                let aurl: string | null = null;
+                
+                // Start TTS generation immediately using high-quality model (single-flight, idempotent)
+                const ttsPromise = (async () => {
+                  // Single-flight guard - only allow current turnId to generate TTS
+                  if (currentTurnIdRef.current !== turnId) {
+                    console.log(`[TTS] Turn ${turnId} superseded by ${currentTurnIdRef.current}, aborting TTS`);
+                    return null;
+                  }
+                  
+                  // Check if TTS already started for this turnId (idempotent)
+                  if (ttsStartedRef.current.has(turnId)) {
+                    console.log(`[TTS] TTS already started for turnId ${turnId}, ignoring duplicate request`);
+                    return null;
+                  }
+                  
+                  // Mark TTS as started for this turnId
+                  ttsStartedRef.current.add(turnId);
+                  console.log(`[TTS] TTS_STARTED ${turnId}`);
+                  
+                  try {
+                    // Use the same high-quality TTS as greeting (gpt-4o-mini-tts)
+                    const r = await fetch("/api/tts", { 
+                      method: "POST", 
+                      headers: { "Content-Type": "application/json" }, 
+                      body: JSON.stringify({ 
+                        text: reply,
+                        voice: "alloy", // Consistent voice
+                        format: "mp3" // High-quality format
+                      }) 
+                    });
+                    if (r.ok) { 
+                      const j = await r.json(); 
+                      console.log("[TTS] Generated high-quality audio for AI response:", j.url);
+                      return j.url;
+                    } else {
+                      console.warn("[TTS] High-quality TTS failed:", r.status);
+                    }
+                  } catch (e) {
+                    console.warn("[TTS] Error generating audio:", e);
+                  }
+                  return null;
+                })();
+                
+                // Store pending TTS for potential cancellation
+                pendingTtsRef.current = null; // No cancel function for audio element approach
+                
+                // Stop agent recorder and prefer per-turn object URL over stub
+                try { agentRecRef.current?.stop(); } catch {}
+                try {
+                  const recorded = (await agentRecDoneRef.current) ?? null;
+                  if (!aurl && recorded) aurl = recorded; // ← only fallback when no TTS URL
+                } catch {}
+                agentRecRef.current = null;
+                agentRecDoneRef.current = null;
+                
+                // Wait for TTS to complete
+                aurl = await ttsPromise;
+                
+                // Check if turn was superseded during TTS generation
+                if (currentTurnIdRef.current !== turnId) {
+                  console.log(`[AI] AI_DROPPED ${turnId} (superseded by ${currentTurnIdRef.current})`);
+                  return;
+                }
+                
+                if (aurl) {
+                  // Final check if turn is still active before pushing and playing
+                  if (currentTurnIdRef.current !== turnId) {
+                    console.log(`[AI] AI_DROPPED ${turnId} (superseded by ${currentTurnIdRef.current})`);
                     return;
                   }
                   
-                  // Add a longer delay to prevent rapid feedback loops
-                  await new Promise(resolve => setTimeout(resolve, 1000));
+                  pushTurn("agent", reply, { audioUrl: useTtsStub ? aurl : undefined });
+                  console.log("[Turn:assistant]", { text: reply.slice(0,40), audioUrl: aurl });
                   
-                  // Prevent AI from responding if the last turn was from AI
-                  const lastTurn = historyRef.current[historyRef.current.length - 1];
-                  const lastTurnWasAgent = lastTurn && lastTurn.role === "agent";
-                  
-                  // Check if we've had too many consecutive agent turns (prevent infinite loops)
-                  const recentTurns = historyRef.current.slice(-3);
-                  const tooManyAgentTurns = recentTurns.length >= 3 && recentTurns.every(t => t.role === "agent");
-                  
-                  // Only respond if the last turn was from user AND we haven't had too many agent turns
-                  // AND we're actually waiting for user input AND AI is not currently speaking
-                  const shouldRespond = !lastTurnWasAgent && !tooManyAgentTurns && waitingForUserRef.current && !agentSpeakingRef.current;
-                  
-                  console.log("[AI] Response check:", { 
-                    lastTurnRole: lastTurn?.role, 
-                    lastTurnWasAgent, 
-                    tooManyAgentTurns, 
-                    waitingForUser: waitingForUserRef.current,
-                    shouldRespond 
-                  });
-                  
-                  if (shouldRespond) {
-                    // Set flag to false since AI is now responding
-                    waitingForUserRef.current = false;
-                    
-                    // Generate AI response based on mode
-                    let reply: string;
-                    if (isMock) {
-                      // Use mock agent in mock mode
-                      reply = getAgentReply(historyRef.current, currentScenario);
-                      console.log("[AI] Generated mock reply:", reply);
-                    } else {
-                      // Use real AI in live mode
+                  // Play the AI response immediately with high-quality settings
+                  if (aurl) {
+                    try {
+                      // Enter AI playing state
+                      enterAIPlaying();
+                      
+                      // Use dedicated audio element for AI response with high-quality settings
+                      const timestamp = Date.now();
+                      console.log("[LiveCall] Creating audio element for AI response");
+                      const aiResponseEl = await ensureAudioEl(`aiResponse_${timestamp}`, { 
+                        volume: 0.7, 
+                        routeToDevice: 'none' // Don't try to route to specific device
+                      });
+                      console.log("[LiveCall] Audio element created:", aiResponseEl);
+                      console.log("[LiveCall] Audio element id:", aiResponseEl.id);
+                      console.log("[LiveCall] Audio element readyState:", aiResponseEl.readyState);
+                      
+                      // Ensure audio context is resumed before playing
                       try {
-                        console.log("[AI] Calling OpenAI API for live response");
-                        const messages = historyRef.current.map(turn => ({
-                          role: turn.role,
-                          text: turn.text
-                        }));
-                        
-                        const response = await fetch("/api/chat", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ 
-                            messages,
-                            scenario: currentScenario
-                          })
-                        });
-                        
-                        if (response.ok) {
-                          const data = await response.json();
-                          reply = data.content || "I didn't catch that. Could you please repeat?";
-                          console.log("[AI] Generated live AI reply:", reply);
-                        } else {
-                          console.warn("[AI] OpenAI API failed, falling back to mock");
-                          reply = getAgentReply(historyRef.current, currentScenario);
-                        }
-                      } catch (error) {
-                        console.warn("[AI] OpenAI API error, falling back to mock:", error);
-                        reply = getAgentReply(historyRef.current, currentScenario);
-                      }
-                    }
-                    
-                    // Start per-turn agent recorder as soon as we have remote track
-                    if (!agentRecRef.current && agentTrackRef.current) {
-                      try {
-                        const { rec, done } = startRecorderForTrack(agentTrackRef.current);
-                        agentRecRef.current = rec;
-                        agentRecDoneRef.current = done;
-                      } catch {}
-                    }
-                    
-                    // Real TTS pipeline: call /api/tts for both mock and live modes
-                    const useTtsStub = isMock || !voiceConnectedRef.current;
-                    let aurl: string | null = null;
-                    
-                    // Start TTS generation immediately for faster response
-                    const ttsPromise = (async () => {
-                      try {
-                        const r = await fetch("/api/tts-fast", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: reply }) });
-                        if (r.ok) { 
-                          const j = await r.json(); 
-                          console.log("[TTS] Generated fast audio for AI response:", j.url, "size:", j?.size);
-                          return j.url;
-                        } else {
-                          console.warn("[TTS] Fast TTS failed, trying fallback...");
-                          // Fallback to regular TTS
-                          const fallbackR = await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: reply }) });
-                          if (fallbackR.ok) {
-                            const j = await fallbackR.json();
-                            console.log("[TTS] Generated fallback audio:", j.url);
-                            return j.url;
-                          }
+                        const audioContext = audioManager.getAudioContext();
+                        if (audioContext && audioContext.state === 'suspended') {
+                          await audioContext.resume();
+                          console.log("[LiveCall] AudioContext resumed before playback");
                         }
                       } catch (e) {
-                        console.warn("[TTS] Error generating audio:", e);
+                        console.warn("[LiveCall] Failed to resume AudioContext:", e);
                       }
-                      return null;
-                    })();
-                    
-                    // Stop agent recorder and prefer per-turn object URL over stub
-                    // Stop agent recorder; use its blob only if TTS failed
-                    try { agentRecRef.current?.stop(); } catch {}
-                    try {
-                      const recorded = (await agentRecDoneRef.current) ?? null;
-                      if (!aurl && recorded) aurl = recorded; // ← only fallback when no TTS URL
-                    } catch {}
-                    agentRecRef.current = null;
-                    agentRecDoneRef.current = null;
-                    
-                    // Wait for TTS to complete
-                    aurl = await ttsPromise;
-                    
-                    if (aurl) {
-                      pushTurn("agent", reply, { audioUrl: useTtsStub ? aurl : undefined });
-                      console.log("[Turn:assistant]", { text: reply.slice(0,40), audioUrl: aurl });
                       
-                      // Play the AI response during the live call
-                      if (aurl) {
-                        try {
-                          // Completely stop speech recognition while AI speaks
-                          if (speechRef.current) {
-                            try {
-                              speechRef.current.stop();
-                              console.log("[Speech] Stopped for AI response");
-                            } catch (e) {
-                              console.warn("[Speech] Failed to stop:", e);
-                            }
-                          }
-                          
-                          setAgentSpeaking(true);
-                          // Use dedicated audio element for AI response to reduce feedback
-                          const aiResponseEl = ensureAudioEl("aiResponse");
-                          aiResponseEl.src = aurl;
-                          aiResponseEl.volume = 0.7; // Lower volume to reduce feedback
-                          
-                          // Set up event listener to handle when AI audio ends
-                          const handleResponseEnd = () => {
-                                                      setAgentSpeaking(false);
-                          aiResponseEl.removeEventListener('ended', handleResponseEnd);
-                          // Restart speech recognition after a longer delay to prevent feedback
-                          setTimeout(() => {
-                            try {
-                              if (speechRef.current && !agentSpeakingRef.current) {
-                                speechRef.current.start();
-                                console.log("[Speech] Restarted after AI response");
-                              }
-                            } catch (e) {
-                              console.warn("[Speech] Failed to restart:", e);
-                            }
-                          }, 3000); // 3 second delay to prevent feedback
+                      // Wait for audio element to be ready with better error handling
+                      if (aiResponseEl.readyState === 0) {
+                        console.log("[LiveCall] Waiting for audio element to be ready...");
+                        await new Promise<void>((resolve) => {
+                          const onCanPlay = () => {
+                            aiResponseEl.removeEventListener('canplay', onCanPlay);
+                            aiResponseEl.removeEventListener('error', onError);
+                            console.log("[LiveCall] Audio element ready, readyState:", aiResponseEl.readyState);
+                            resolve();
                           };
-                          aiResponseEl.addEventListener('ended', handleResponseEnd);
                           
-                          await aiResponseEl.play();
-                          console.log("[LiveCall] Playing AI response:", aurl);
-                        } catch (e) {
-                          console.warn("[LiveCall] Failed to play AI response:", e);
-                          agentSpeakingRef.current = false;
-                        }
+                          const onError = (e: Event) => {
+                            aiResponseEl.removeEventListener('canplay', onCanPlay);
+                            aiResponseEl.removeEventListener('error', onError);
+                            console.warn("[LiveCall] Audio element error during loading:", e);
+                            resolve(); // Resolve anyway to continue
+                          };
+                          
+                          aiResponseEl.addEventListener('canplay', onCanPlay);
+                          aiResponseEl.addEventListener('error', onError);
+                          
+                          // Timeout after 3 seconds (increased from 2)
+                          setTimeout(() => {
+                            aiResponseEl.removeEventListener('canplay', onCanPlay);
+                            aiResponseEl.removeEventListener('error', onError);
+                            console.log("[LiveCall] Audio element ready timeout, proceeding anyway");
+                            resolve();
+                          }, 3000);
+                        });
                       }
-                    } else {
-                      // No TTS and no recording — skip pushing empty audio to avoid mic re-records
-                      console.warn("No TTS or recording available — skipping agent audio for this turn");
+                      
+                      // Store reference for barge-in cancellation
+                      currentAIAudioRef.current = aiResponseEl;
+                      
+                      // Set src after sinkId has been configured
+                      console.log("[LiveCall] Setting audio src:", aurl);
+                      aiResponseEl.src = aurl;
+                      console.log("[LiveCall] Audio src set:", aiResponseEl.src);
+                      
+                      // Ensure the audio element is properly configured
+                      aiResponseEl.preload = "auto";
+                      aiResponseEl.volume = 0.7;
+                      console.log("[LiveCall] Audio element configured - preload:", aiResponseEl.preload, "volume:", aiResponseEl.volume);
+                      
+                      // Set up event listener to handle when AI audio ends
+                      const handleResponseEnd = () => {
+                        aiResponseEl.removeEventListener('ended', handleResponseEnd);
+                        // Clean up AI analyzer
+                        aiAnalyserRef.current = null;
+                        aiSourceRef.current = null;
+                        // Clear current AI audio reference
+                        currentAIAudioRef.current = null;
+                        // Exit AI playing state
+                        exitAIPlaying();
+                        // Remove the audio element to prevent memory leaks
+                        try {
+                          if (aiResponseEl.parentNode) {
+                            aiResponseEl.parentNode.removeChild(aiResponseEl);
+                          }
+                        } catch (e) {
+                          console.warn("[Cleanup] Failed to remove audio element:", e);
+                        }
+                      };
+                      aiResponseEl.addEventListener('ended', handleResponseEnd);
+                      
+                      // Setup AI analyzer for echo suppression AFTER audio element is ready
+                      // Wait for the audio to be loaded before setting up analyzer
+                      const setupAnalyzerAfterLoad = () => {
+                        if (aiResponseEl.readyState >= 2) { // HAVE_CURRENT_DATA or higher
+                          setupAIAnalyzer(aiResponseEl);
+                          aiResponseEl.removeEventListener('loadeddata', setupAnalyzerAfterLoad);
+                        }
+                      };
+                      aiResponseEl.addEventListener('loadeddata', setupAnalyzerAfterLoad);
+                      
+                      // Also try to setup immediately if already loaded
+                      if (aiResponseEl.readyState >= 2) {
+                        setupAIAnalyzer(aiResponseEl);
+                      }
+                      
+                      console.log("[LiveCall] Attempting to play AI response:", aurl);
+                      console.log("[LiveCall] Audio element readyState:", aiResponseEl.readyState);
+                      console.log("[LiveCall] Audio element paused:", aiResponseEl.paused);
+                      console.log("[LiveCall] Audio element src:", aiResponseEl.src);
+                      
+                      try {
+                        // Ensure the audio element is not paused and has a valid src
+                        if (aiResponseEl.paused && aiResponseEl.src) {
+                          console.log("[LiveCall] Audio element is paused, attempting to play...");
+                          await aiResponseEl.play();
+                          console.log("[LiveCall] Successfully started playing AI response:", aurl);
+                        } else {
+                          console.log("[LiveCall] Audio element already playing or no src");
+                        }
+                      } catch (playError) {
+                        console.error("[LiveCall] Failed to play audio:", playError);
+                        console.error("[LiveCall] Audio element state - paused:", aiResponseEl.paused, "readyState:", aiResponseEl.readyState, "src:", aiResponseEl.src);
+                        throw playError;
+                      }
+                    } catch (e) {
+                      console.warn("[LiveCall] Failed to play AI response:", e);
+                      // Exit AI playing state on error
+                      exitAIPlaying();
                     }
                   }
-
-                  await new Promise((resolve) => setTimeout(resolve, 600 + Math.floor(Math.random() * 400)));
-                  // Only restart speech recognition if AI is not speaking
-                  if (!agentSpeakingRef.current) {
-                    try { speechRef.current?.start(); } catch {}
-                  }
-                });
+                } else {
+                  console.warn("No TTS or recording available — skipping agent audio for this turn");
+                }
               }
             }
           });
+          
+          // Assign to speechRef for compatibility
+          speechRef.current = speechInstanceRef.current;
+          console.log("[Speech] Speech recognition instance created:", !!speechRef.current);
         }
-        // Start speech recognition after a delay to avoid picking up the greeting
-        setTimeout(() => {
-          console.log("[Speech] Starting speech recognition after delay");
-          // Only start speech recognition if we have a working microphone
-          if (micStreamRef.current && micStreamRef.current.getAudioTracks().length > 0) {
-            const audioTrack = micStreamRef.current.getAudioTracks()[0];
-            if (audioTrack.enabled && audioTrack.readyState === 'live') {
-              try { 
-                speechRef.current?.start(); 
-                console.log("[Speech] Speech recognition started successfully");
-              } catch (e) {
-                console.warn("[Speech] Failed to start speech recognition:", e);
-              }
-            } else {
-              console.warn("[Speech] Microphone not ready, skipping speech recognition");
-            }
-          } else {
-            console.warn("[Speech] No microphone stream available, skipping speech recognition");
-          }
-        }, 4000); // 4 second delay to let greeting finish and prevent feedback
+        
+        // Speech recognition will be started by the state machine after AI greeting ends
       }
     });
     
@@ -841,11 +1907,12 @@ async function endLiveKitCall() {
     
     // Stop speech and mic
     try { speechRef.current?.stop(); } catch {}
+    try { speechInstanceRef.current?.stop(); } catch {}
+    speechInstanceRef.current = null;
     try {
       if (isRecording) {
-        const blob = await mic.stopRecording();
         setIsRecording(false);
-        if (blob) setAudioUrl(URL.createObjectURL(blob));
+        // Note: Recording functionality not implemented in MicrophoneManager
       }
     } catch {}
     mic.stop();
@@ -873,6 +1940,8 @@ async function endLiveKitCall() {
     voiceConnectedRef.current = false;
     greetedRef.current = false;
     agentSpeakingRef.current = false;
+    isCallActiveRef.current = false; // Reset hot-reload protection
+    
     // Build minimal CallReview and persist to localStorage under "calls"
     type AgentTurn = { role: "user" | "agent"; text: string; ts: number; audioUrl?: string };
     type CallReview = {
@@ -919,17 +1988,9 @@ async function endLiveKitCall() {
     
     // Clean up all audio and speech before navigating
     console.log("[EndCall] Cleaning up before navigation...");
+    cleanup(); // Use the centralized cleanup function
+    
     try {
-      // Stop any ongoing speech recognition
-      if (speechRef.current) {
-        try {
-          speechRef.current.stop();
-        } catch (e) {
-          console.warn("[EndCall] Failed to stop speech:", e);
-        }
-        speechRef.current = null;
-      }
-      
       // Stop mic service
       try {
         await mic.stop();
@@ -944,45 +2005,39 @@ async function endLiveKitCall() {
       agentRecRef.current = null;
       agentRecDoneRef.current = null;
       
-      // Stop any playing audio
-      if (agentSpeakingRef.current) {
-        stopSpeaking();
-        agentSpeakingRef.current = false;
-      }
-      
-      // Force stop all audio elements
-      const audioElements = document.querySelectorAll('audio');
-      audioElements.forEach(audio => {
-        try {
-          audio.pause();
-          audio.currentTime = 0;
-          audio.src = '';
-        } catch (e) {
-          console.warn("[EndCall] Failed to stop audio element:", e);
-        }
-      });
-      
       // Disconnect from LiveKit
       if (roomRef.current) {
         await roomRef.current.disconnect();
         roomRef.current = null;
       }
       
-          console.log("[EndCall] Cleanup complete");
-  } catch (e) {
-    console.warn("[EndCall] Cleanup error:", e);
-  }
+      console.log("[EndCall] Cleanup complete");
+    } catch (e) {
+      console.warn("[EndCall] Cleanup error:", e);
+    }
   
-  console.log("[EndCall] Navigating to review page:", `/review?id=${id}`);
-  try {
-    await router.push(`/review?id=${id}`);
-    console.log("[EndCall] Navigation successful");
-  } catch (e) {
-    console.error("[EndCall] Navigation failed:", e);
-    // Fallback: try to navigate manually
-    window.location.href = `/review?id=${id}`;
+    console.log("[EndCall] Navigating to review page:", `/review?id=${id}`);
+    try {
+      await router.push(`/review?id=${id}`);
+      console.log("[EndCall] Navigation successful");
+    } catch (e) {
+      console.error("[EndCall] Navigation failed:", e);
+      // Fallback: try to navigate manually
+      window.location.href = `/review?id=${id}`;
+    }
   }
-  }
+
+  // Expose barge-in state for health monitoring
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      (window as any).__BARGE_STATE__ = {
+        aiPlaying: aiPlayingRef.current,
+        ttsPlaying: ttsPlayingRef.current,
+        bargeEnabled: bargeEnabledRef.current,
+        bargeActive: bargeActiveRef.current
+      };
+    }
+  }, [aiPlayingRef.current, ttsPlayingRef.current, bargeEnabledRef.current, bargeActiveRef.current]);
 
   return (
     <main className="min-h-screen bg-gray-50">
@@ -1000,491 +2055,139 @@ async function endLiveKitCall() {
                 </span>
               )}
             </div>
-            <p className="text-xs text-gray-500">
-              {modeLabel === "Challenge" && currentScenario ? `Scenario: ${currentScenario.title}` : ""}
+            <p className="mt-1 text-sm text-gray-600">
+              {currentScenario?.persona || "Sales Agent"} • {currentScenario?.topic || "General"}
             </p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-4">
             <BudgetBadge />
-            <span className={`text-xs ${isMock ? "text-gray-900" : "text-gray-500"}`}>Mock</span>
-            <button
-              type="button"
-              onClick={async () => {
-                try {
-                  const resp = await fetch("/api/budget");
-                  const data = await resp.json();
-                  if (data && data.allowed === false) {
-                    return; // Budget cap reached; keep mock ON
-                  }
-                } catch {}
-                const nextIsMock = !isMock;
-                console.log(`[Toggle] Switching from ${isMock ? 'mock' : 'live'} to ${nextIsMock ? 'mock' : 'live'} mode`);
-                setIsMock(nextIsMock);
-                const params = new URLSearchParams(searchParams.toString());
-                params.set("mock", nextIsMock ? "1" : "0");
-                router.replace(`${pathname}?${params.toString()}`, { scroll: false });
-              }}
-              className={`relative h-6 w-11 rounded-full transition ${isMock ? "bg-blue-600" : "bg-gray-300"}`}
-              aria-pressed={isMock}
-            >
-              <span
-                className={`absolute top-0.5 h-5 w-5 transform rounded-full bg-white shadow transition ${
-                  isMock ? "left-0.5 translate-x-0" : "left-0.5 translate-x-5"
-                }`}
-              />
-            </button>
-            <span className={`text-xs ${!isMock ? "text-gray-900" : "text-gray-500"}`}>Live</span>
-            <button
-              type="button"
-              onClick={handleEnd}
-              className="ml-2 rounded-md border border-gray-300 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
-            >
-              End Session
-            </button>
-            <DebugToggle onChange={setShowChat} />
+            <DebugToggle
+              onChange={setShowChat}
+            />
           </div>
         </div>
       </header>
 
-      <section className="mx-auto max-w-5xl px-6 py-8 space-y-6">
-        <CallBar state={voiceConnected ? "connected" : "idle"} onCall={handleCall} onEnd={handleEnd} stream={micStream} isInitializing={isInitializing} />
-        
-        {/* Loading and error states */}
-        {isInitializing && (
-          <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
+      <div className="mx-auto flex max-w-5xl flex-col gap-6 p-6">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <ScenarioPicker value={scenarioId} onChange={(id) => router.push(`/session?scenario=${id}&mode=${modeRaw}&mock=${isMock ? "1" : "0"}`)} />
             <div className="flex items-center gap-2">
-              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
-              <div>Initializing call... Please wait.</div>
-            </div>
-          </div>
-        )}
-        
-        {initError && (
-          <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
-            <div className="flex items-start gap-2">
-              <div className="mt-0.5">⚠️</div>
-              <div>
-                <div>{initError}</div>
-                <div className="mt-2 text-xs text-red-700">
-                  <strong>Troubleshooting:</strong>
-                  <ul className="mt-1 space-y-1">
-                    <li>• Make sure your browser allows microphone access</li>
-                    <li>• Try clicking "Test Mic" to check microphone access</li>
-                    <li>• Try clicking "Restart Mic" to reset the microphone</li>
-                    <li>• Check if another app is using your microphone</li>
-                    <li>• Try refreshing the page and allowing microphone access when prompted</li>
-                  </ul>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-        
-        <div className="-mt-4 flex justify-end px-1 text-[11px] text-gray-500">
-          <div className="flex items-center gap-2">
-            <span>Mic: {micStatus}</span>
-            {micStream && (
-              <span className="text-xs">
-                ({micStream.getAudioTracks().length} tracks, 
-                {micStream.getAudioTracks()[0]?.readyState || 'unknown'} state)
-              </span>
-            )}
-            {micStream && (
-              <span className={`inline-flex items-center gap-1 px-1 rounded text-xs ${
-                micStream.getAudioTracks()[0]?.readyState === 'live' 
-                  ? 'bg-green-100 text-green-700' 
-                  : 'bg-red-100 text-red-700'
-              }`}>
-                <span className={`w-1.5 h-1.5 rounded-full ${
-                  micStream.getAudioTracks()[0]?.readyState === 'live' 
-                    ? 'bg-green-500' 
-                    : 'bg-red-500'
-                }`}></span>
-                {micStream.getAudioTracks()[0]?.readyState === 'live' ? 'Live' : 'Not Ready'}
-              </span>
-            )}
-          </div>
-          {(micStatus === 'blocked' || micStatus === 'error') && (
-            <>
               <button
                 onClick={async () => {
-                  try {
-                    console.log("[Mic] Manual permission request...");
-                    await navigator.mediaDevices.getUserMedia({ audio: true });
-                    console.log("[Mic] Permission granted manually");
-                    // Retry mic start
-                    const stream = await mic.start();
-                    if (stream) {
-                      setMicStream(stream);
-                      mic.startRecording();
-                      setIsRecording(true);
-                      console.log("[Mic] Successfully started microphone after manual permission");
+                  if (isToggling) return; // Prevent multiple clicks
+                  
+                  setIsToggling(true);
+                  const newMockValue = !isMock;
+                  
+                  // Check budget before allowing live mode
+                  if (!newMockValue) { // Switching to live mode
+                    try {
+                      const resp = await fetch("/api/budget");
+                      const data = await resp.json();
+                      if (data && data.allowed === false) {
+                        console.log("[Toggle] Budget cap reached, keeping mock mode ON");
+                        alert("Budget cap reached. Please stay in mock mode or contact support.");
+                        setIsToggling(false);
+                        return; // Keep mock ON
+                      }
+                    } catch (e) {
+                      console.warn("[Toggle] Failed to check budget, allowing live mode");
                     }
-                  } catch (err) {
-                    console.error('[Mic] Manual permission request failed:', err);
-                    alert('Please allow microphone access in your browser settings.');
                   }
+                  
+                  setIsMock(newMockValue);
+                  // Update URL to persist the change
+                  const params = new URLSearchParams(searchParams.toString());
+                  params.set("mock", newMockValue ? "1" : "0");
+                  router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+                  console.log(`[Toggle] Switching from ${isMock ? 'mock' : 'live'} to ${newMockValue ? 'mock' : 'live'} mode`);
+                  setIsToggling(false);
                 }}
-                className="ml-2 text-blue-600 hover:text-blue-800 underline"
+                disabled={isToggling}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  isToggling
+                    ? "bg-gray-100 text-gray-400 cursor-not-allowed"
+                    : isMock
+                    ? "bg-blue-100 text-blue-700 hover:bg-blue-200"
+                    : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                }`}
               >
-                Allow Mic
+                {isToggling ? "Switching..." : `Mock: ${isMock ? "On" : "Off"}`}
               </button>
-              <button
-                onClick={async () => {
-                  try {
-                    console.log("[Mic] Force mic restart...");
-                    // Stop any existing mic
-                    mic.stop();
-                    // Force new permission request
-                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                    setMicStream(stream);
-                    // Try to start mic service again
-                    const micStream = await mic.start();
-                    if (micStream) {
-                      mic.startRecording();
-                      setIsRecording(true);
-                      console.log("[Mic] Force restart successful");
-                    }
-                  } catch (err) {
-                    console.error('[Mic] Force restart failed:', err);
-                  }
-                }}
-                className="ml-2 text-red-600 hover:text-red-800 underline"
-              >
-                Force Mic
-              </button>
-            </>
-          )}
-          {micStatus === 'idle' && (
-            <span className="ml-2 text-gray-400">Click "Start Call" to activate</span>
-          )}
+            </div>
+          </div>
         </div>
-        
-        {/* Audio feedback warning */}
-        {voiceConnected && (
-          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-            <div className="flex items-start gap-2">
-              <div className="mt-0.5 text-amber-600">🔊</div>
-              <div>
-                <div className="font-medium">Audio Feedback Notice</div>
-                <div className="text-xs text-amber-700 mt-1">
-                  For best results, use headphones to prevent the AI's voice from being picked up by your microphone. 
-                  The system includes echo cancellation, but headphones will provide the clearest experience.
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-        {modeLabel === "Challenge" && (
-          <div className="rounded-xl border border-gray-200 bg-white p-4">
-            <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-              <div className="md:w-[480px]">
-                <label className="block text-xs font-medium text-gray-600">Select Scenario</label>
-                <ScenarioPicker
-                  size="sm"
-                  value={scenarioId}
-                  onChange={(id) => {
-                    const params = new URLSearchParams(searchParams.toString());
-                    if (id) params.set("scenario", id);
-                    else params.delete("scenario");
-                    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
-                  }}
-                />
-              </div>
-              {currentScenario && (
-                <div className="text-xs text-gray-600 md:text-right">
-                  <div className="font-medium text-gray-900">Scenario: {currentScenario.title}</div>
-                  <div className="text-gray-600">{currentScenario.setting} • {currentScenario.persona}</div>
-                </div>
-              )}
-            </div>
-            {currentScenario ? (
-              <p className="mt-3 text-sm text-gray-700">{currentScenario.brief}</p>
-            ) : (
-              <p className="mt-3 text-sm text-gray-500">No scenario selected. Go back to the home page to pick one.</p>
-            )}
-            <p className="mt-2 text-[11px] text-gray-500">Mock mode seeds the chat with the scenario’s opening messages.</p>
-          </div>
-        )}
 
-        {currentScenario ? (
-          <div className="flex flex-col items-start gap-4">
-            <ClientOnly>
+        <div className="flex flex-col gap-6">
+          <CallBar
+            state={voiceConnected ? "connected" : "idle"}
+            onCall={handleCall}
+            onEnd={handleEnd}
+            stream={micStream}
+            isInitializing={isInitializing}
+          />
+
+          {showChat && (
+            <div className="rounded-lg border border-gray-200 bg-white p-4">
               <ChatWindowClient
+                visible={showChat}
                 isMock={isMock}
                 voiceConnected={voiceConnected}
                 callActive={voiceConnected}
-                seedMessages={isMock ? currentScenario?.starterMessages : undefined}
-                visible={showChat}
                 externalTurn={externalTurn}
+                onUserUtterance={handleChatUserUtterance}
               />
-            </ClientOnly>
-            <button
-              type="button"
-              onClick={() => {
-                const last3 = historyRef.current.slice(-3).map(t => ({ role: t.role, text: (t.text||'').slice(0,30), audioUrl: t.audioUrl }));
-                console.log("[LastTurns]", last3);
-              }}
-              className="rounded-md border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50"
-            >
-              Log last turns
-            </button>
-            <button
-              type="button"
-              onClick={async () => {
-                console.log("=== MICROPHONE DEBUG INFO ===");
-                console.log("[Debug] Mic status:", micStatus);
-                console.log("[Debug] Mic stream:", mic.getStream());
-                console.log("[Debug] Mic active:", mic.isActive());
-                console.log("[Debug] Mic stream state:", mic.getStream()?.active);
-                console.log("[Debug] Mic stream tracks:", mic.getStream()?.getTracks().map(t => ({ id: t.id, kind: t.kind, enabled: t.enabled, readyState: t.readyState })));
-                
-                console.log("[Debug] Available devices:");
-                const devices = await navigator.mediaDevices.enumerateDevices();
-                const audioDevices = devices.filter(d => d.kind === 'audioinput');
-                console.log("[Debug] Audio devices:", audioDevices.map(d => ({ deviceId: d.deviceId, label: d.label, groupId: d.groupId })));
-                
-                if (audioDevices.length === 0) {
-                  console.warn("[Debug] NO AUDIO DEVICES FOUND!");
-                  alert("No microphone devices detected. Please check your microphone connection.");
-                } else {
-                  console.log("[Debug] Found", audioDevices.length, "audio device(s)");
-                  audioDevices.forEach((device, index) => {
-                    console.log(`[Debug] Device ${index + 1}:`, {
-                      label: device.label || "Unknown device",
-                      deviceId: device.deviceId,
-                      groupId: device.groupId
-                    });
-                  });
-                }
-                
-                console.log("[Debug] LiveKit room:", roomRef.current);
-                console.log("[Debug] Local mic track:", localMicTrackRef.current);
-                
-                // Test direct getUserMedia
-                try {
-                  console.log("[Debug] Testing direct getUserMedia...");
-                  const testStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                  console.log("[Debug] Direct getUserMedia succeeded:", testStream);
-                  testStream.getTracks().forEach(track => track.stop());
-                } catch (err) {
-                  console.error("[Debug] Direct getUserMedia failed:", err);
-                }
-                
-                console.log("=== END DEBUG INFO ===");
-              }}
-              className="rounded-md border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50"
-            >
-              Debug Mic
-            </button>
-            <button
-              type="button"
-              onClick={async () => {
-                try {
-                  console.log("[Test] Testing microphone access...");
-                  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                  console.log("[Test] SUCCESS! Microphone access granted");
-                  console.log("[Test] Stream:", stream);
-                  console.log("[Test] Tracks:", stream.getTracks());
-                  
-                  // Test if the microphone is actually working by checking the audio track
-                  const audioTrack = stream.getAudioTracks()[0];
-                  if (audioTrack && audioTrack.readyState === 'live') {
-                    alert("✅ Microphone test successful! Your microphone is working properly.");
-                  } else {
-                    alert("⚠️ Microphone access granted but track not ready. Try refreshing the page.");
-                  }
-                  
-                  stream.getTracks().forEach(track => track.stop());
-                } catch (err) {
-                  console.error("[Test] FAILED! Microphone access denied:", err);
-                  alert("❌ Microphone test failed. Please check your browser settings and allow microphone access.");
-                }
-              }}
-              className="rounded-md border border-green-300 px-2 py-1 text-xs text-green-700 hover:bg-green-50"
-            >
-              Test Mic
-            </button>
-            <button
-              type="button"
-              onClick={async () => {
-                try {
-                  console.log("[DeviceSelect] Opening device selector...");
-                  const devices = await navigator.mediaDevices.enumerateDevices();
-                  const audioDevices = devices.filter(d => d.kind === 'audioinput');
-                  
-                  if (audioDevices.length === 0) {
-                    alert("No microphone devices found. Please check your microphone connection.");
-                    return;
-                  }
-                  
-                  if (audioDevices.length === 1) {
-                    alert(`Found 1 microphone: ${audioDevices[0].label || 'Unknown device'}`);
-                    return;
-                  }
-                  
-                  // Create a simple device selector
-                  const deviceList = audioDevices.map((device, index) => 
-                    `${index + 1}. ${device.label || 'Unknown device'}`
-                  ).join('\n');
-                  
-                  const selection = prompt(
-                    `Found ${audioDevices.length} microphone(s):\n\n${deviceList}\n\nEnter the number of the device you want to use (1-${audioDevices.length}):`
-                  );
-                  
-                  const deviceIndex = parseInt(selection || '') - 1;
-                  if (deviceIndex >= 0 && deviceIndex < audioDevices.length) {
-                    const selectedDevice = audioDevices[deviceIndex];
-                    console.log("[DeviceSelect] Selected device:", selectedDevice);
-                    
-                    // Try to access the selected device
-                    try {
-                      const stream = await navigator.mediaDevices.getUserMedia({
-                        audio: {
-                          deviceId: { exact: selectedDevice.deviceId },
-                          echoCancellation: true,
-                          noiseSuppression: true,
-                          autoGainControl: true
-                        }
-                      });
-                      
-                      // Update the current microphone stream
-                      if (micStreamRef.current) {
-                        micStreamRef.current.getTracks().forEach(track => track.stop());
-                      }
-                      
-                      setMicStream(stream);
-                      micStreamRef.current = stream;
-                      mic.setStream(stream);
-                      
-                      try {
-                        mic.startRecording();
-                        setIsRecording(true);
-                        console.log("[DeviceSelect] Recording started with selected device");
-                        alert(`✅ Successfully switched to: ${selectedDevice.label || 'Unknown device'}`);
-                      } catch (recordingErr) {
-                        console.warn("[DeviceSelect] Recording failed:", recordingErr);
-                        alert(`⚠️ Device switched but recording failed: ${selectedDevice.label || 'Unknown device'}`);
-                      }
-                    } catch (deviceErr) {
-                      console.error("[DeviceSelect] Failed to access selected device:", deviceErr);
-                      alert(`❌ Failed to access selected device: ${selectedDevice.label || 'Unknown device'}`);
-                    }
-                  } else {
-                    alert("Invalid selection. Please try again.");
-                  }
-                } catch (err) {
-                  console.error("[DeviceSelect] Error:", err);
-                  alert("❌ Error accessing device list. Please check your browser settings.");
-                }
-              }}
-              className="rounded-md border border-purple-300 px-2 py-1 text-xs text-purple-700 hover:bg-purple-50"
-            >
-              Select Device
-            </button>
-            <button
-              type="button"
-              onClick={async () => {
-                try {
-                  console.log("[Restart] Manually restarting microphone...");
-                  
-                  // Stop any existing microphone
-                  mic.stop();
-                  if (micStreamRef.current) {
-                    micStreamRef.current.getTracks().forEach(track => track.stop());
-                    micStreamRef.current = null;
-                  }
-                  setMicStream(null);
-                  setIsRecording(false);
-                  
-                  // Wait a moment
-                  await new Promise(resolve => setTimeout(resolve, 500));
-                  
-                  // Try to get microphone access again
-                  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                  console.log("[Restart] Microphone restarted successfully:", stream);
-                  setMicStream(stream);
-                  micStreamRef.current = stream;
-                  mic.setStream(stream);
-                  
-                  try {
-                    mic.startRecording();
-                    setIsRecording(true);
-                    console.log("[Restart] Recording started after restart");
-                    alert("✅ Microphone restarted successfully!");
-                  } catch (recordingErr) {
-                    console.warn("[Restart] Recording failed after restart:", recordingErr);
-                    alert("⚠️ Microphone restarted but recording failed. The mic should still work for speech recognition.");
-                  }
-                } catch (err) {
-                  console.error("[Restart] Failed to restart microphone:", err);
-                  alert("❌ Failed to restart microphone. Please check your browser settings.");
-                }
-              }}
-              className="rounded-md border border-blue-300 px-2 py-1 text-xs text-blue-700 hover:bg-blue-50"
-            >
-              Restart Mic
-            </button>
-          </div>
-        ) : (
-          <div className="rounded-lg border border-gray-200 bg-white p-6 text-sm text-gray-600">Pick a scenario on the home page to start a session.</div>
-        )}
-        {audioUrl && (
-          <div className="rounded-xl border border-gray-200 bg-white p-4">
-            <div className="text-xs font-medium text-gray-700">Call Audio (local)</div>
-            <audio controls src={audioUrl} className="mt-2 w-full" />
-          </div>
-        )}
-      </section>
+            </div>
+          )}
+
+          {/* Audio Device Settings */}
+          {showChat && (
+            <AudioDeviceSelector />
+          )}
+
+          {/* Text Chat Mirror for Live Mode */}
+          {!isMock && voiceConnected && (
+            <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+              <h3 className="text-sm font-medium text-blue-900 mb-2">Live Chat Mirror</h3>
+              
+              {/* User Finals */}
+              {asrFinals.length > 0 && (
+                <div className="mb-3">
+                  <div className="text-xs text-blue-700 mb-1">User:</div>
+                  <div className="space-y-1">
+                    {asrFinals.slice(-3).map((text, i) => (
+                      <div key={i} className="text-sm text-blue-800 bg-white p-2 rounded border">
+                        {text}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {/* Echo Gate Messages */}
+              {droppedItems.filter(item => item.reason === "echo_gate").length > 0 && (
+                <div className="mb-3">
+                  <div className="text-xs text-gray-600 italic">
+                    (voice ignored—sounded like echo)
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
     </main>
   );
-  
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      console.log("[Cleanup] Cleaning up session resources...");
-      
-      // Stop LiveKit
-      try { 
-        roomRef.current?.disconnect(); 
-      } catch (e) {
-        console.warn("[Cleanup] LiveKit disconnect error:", e);
-      }
-      
-      // Stop speech recognition
-      try {
-        speechRef.current?.stop();
-      } catch (e) {
-        console.warn("[Cleanup] Speech stop error:", e);
-      }
-      
-      // Stop mic service
-      try {
-        mic.stop();
-      } catch (e) {
-        console.warn("[Cleanup] Mic stop error:", e);
-      }
-      
-      // Stop any playing audio
-      const audioElements = document.querySelectorAll('audio');
-      audioElements.forEach(audio => {
-        try {
-          audio.pause();
-          audio.currentTime = 0;
-          audio.src = '';
-        } catch (e) {}
-      });
-      
-      console.log("[Cleanup] Cleanup completed");
-    };
-  }, []);
 }
 
 export default function SessionPage() {
   return (
-    <Suspense fallback={<main className="min-h-screen bg-gray-50" />}> 
-      <SessionInner />
-    </Suspense>
+    <ClientOnly>
+      <Suspense fallback={<div>Loading...</div>}>
+        <SessionInner />
+      </Suspense>
+    </ClientOnly>
   );
 }
 

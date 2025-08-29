@@ -1,0 +1,21 @@
+{
+  "id": "5e438112-c56e-4080-b856-76afb4cb2022",
+  "createdAt": 1756440263658,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ICU Nurse Manager + IP. Unit flagged elevated C.",
+      "url": "/uploads/aud-1756440240369.mp3"
+    },
+    {
+      "role": "user",
+      "text": "can your mirror it",
+      "url": "/api/audio/262d7a2d-29d7-4bef-8326-6667b8d8a229"
+    },
+    {
+      "role": "agent",
+      "text": "Sure! As the ICU Nurse Manager and Infection Preventionist, I want to emphasize the importance of using bleach for isolation rooms and terminal cleans to combat elevated C. diff rates, while we’ll find ways to manage workflow and address odor concerns together.",
+      "url": null
+    }
+  ]
+}

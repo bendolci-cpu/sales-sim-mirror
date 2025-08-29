@@ -1,0 +1,41 @@
+{
+  "id": "f41e468b-109b-4c79-8f70-6dbb9f2c9ebe",
+  "createdAt": 1756438979102,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ED Charge Nurse. ED needs sub‑5‑minute room turnovers.",
+      "url": "/uploads/aud-1756438943823.mp3"
+    },
+    {
+      "role": "user",
+      "text": "hey how's it going",
+      "url": "/api/audio/080dda31-0b71-4a58-9365-1a8cc41037a1"
+    },
+    {
+      "role": "agent",
+      "text": "I'm good, thanks! How about you?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "good can we talk about something today",
+      "url": "/api/audio/a50313f4-6e03-460f-8b37-5ebc296b2d45"
+    },
+    {
+      "role": "agent",
+      "text": "Of course! What’s on your mind?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "say a long sentence",
+      "url": "/api/audio/d70d0af0-16ec-4bdd-a4c8-b32949dcf284"
+    },
+    {
+      "role": "agent",
+      "text": "Sure! In the busy environment of the emergency department, maintaining efficient room turnovers while ensuring high-touch surfaces are properly cleaned is crucial for patient safety and staff efficiency.",
+      "url": null
+    }
+  ]
+}

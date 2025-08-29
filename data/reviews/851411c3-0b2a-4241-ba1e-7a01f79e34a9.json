@@ -1,0 +1,31 @@
+{
+  "id": "851411c3-0b2a-4241-ba1e-7a01f79e34a9",
+  "createdAt": 1756431525112,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is IP Director + Value Analysis. Annual renewal for Sani‑Cloth AF3 and Bleach Wipes across ICU/ED/OR.",
+      "url": "/uploads/aud-1756431507703.mp3"
+    },
+    {
+      "role": "user",
+      "text": "e d o r",
+      "url": "/api/audio/69bfeb71-df26-4130-a8b7-d2eeee6b6a7c"
+    },
+    {
+      "role": "user",
+      "text": "hey how you doing",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Are you looking for information on standardizing to one SKU for the ED/OR, or do you have specific concerns about compliance or training?",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "I'm doing well, thanks! How about you?",
+      "url": null
+    }
+  ]
+}

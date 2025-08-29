@@ -1,0 +1,21 @@
+{
+  "id": "f910cd83-5951-4bba-8469-a82fc8b91ed9",
+  "createdAt": 1756435253680,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ED Charge Nurse. ED needs sub‑5‑minute room turnovers.",
+      "url": "/uploads/aud-1756435233764.mp3"
+    },
+    {
+      "role": "user",
+      "text": "charge nurse Ed needs sub 5-minute room turnovers",
+      "url": "/api/audio/5494ee74-2beb-403b-a5e6-922c934275a4"
+    },
+    {
+      "role": "agent",
+      "text": "Absolutely, we need to streamline our cleaning process to ensure all high-touch surfaces are wiped down quickly and effectively. Let's focus on using the right products and maintaining proper contact time.",
+      "url": null
+    }
+  ]
+}

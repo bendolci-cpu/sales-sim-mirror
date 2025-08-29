@@ -1,0 +1,51 @@
+{
+  "id": "351138cc-a474-42f5-915b-ae02c8e4bcb2",
+  "createdAt": 1756438268540,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is IP Director + Value Analysis. Annual renewal for Sani‑Cloth AF3 and Bleach Wipes across ICU/ED/OR.",
+      "url": "/uploads/aud-1756438204257.mp3"
+    },
+    {
+      "role": "user",
+      "text": "hey how's it going",
+      "url": "/api/audio/3c2f57c3-1b2c-4033-b6ca-f92e4650dd38"
+    },
+    {
+      "role": "agent",
+      "text": "I'm doing well, thanks! How about you?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "doing well",
+      "url": "/api/audio/c7f59741-9d5b-4161-8d0f-c1c7515523c4"
+    },
+    {
+      "role": "agent",
+      "text": "Glad to hear that! What can I assist you with today?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "I didn't say anything",
+      "url": "/api/audio/b5499d71-af5c-4226-b70b-5fa2aaf991a9"
+    },
+    {
+      "role": "agent",
+      "text": "Got it! Just let me know when you’re ready to discuss the renewal.",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "all right can we talk about it now",
+      "url": "/api/audio/961856f8-8d54-4ef0-b22d-b3d7b5d21b9c"
+    },
+    {
+      "role": "agent",
+      "text": "Absolutely! Let’s dive into the renewal for Sani‑Cloth AF3 and Bleach Wipes. What are your main concerns?",
+      "url": null
+    }
+  ]
+}

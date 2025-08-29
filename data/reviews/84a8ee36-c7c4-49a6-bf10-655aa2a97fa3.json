@@ -1,0 +1,41 @@
+{
+  "id": "84a8ee36-c7c4-49a6-bf10-655aa2a97fa3",
+  "createdAt": 1756440423721,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ED Charge Nurse. ED needs sub‑5‑minute room turnovers.",
+      "url": "/uploads/aud-1756440392991.mp3"
+    },
+    {
+      "role": "user",
+      "text": "can you hear me",
+      "url": "/api/audio/7405d0cc-e5eb-4b66-a6d7-32d0c4a14b24"
+    },
+    {
+      "role": "agent",
+      "text": "Yes, I can hear you! How can I assist you today?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "they can I interrupt you",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Of course! What do you need to discuss?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "of course sailoring sentence",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Sure! Just let me know what you want to focus on, and I’ll help you craft a concise statement.",
+      "url": null
+    }
+  ]
+}

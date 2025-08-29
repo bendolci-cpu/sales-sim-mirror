@@ -30,10 +30,11 @@ export async function POST(req: NextRequest) {
     const openai = new OpenAI({ apiKey });
 
     const resp = await openai.audio.speech.create({
-      model: "gpt-4o-mini-tts",
+      model: "gpt-4o-mini-tts", // High-quality model for consistent voice
       voice,
       input: text,
       response_format: outFmt,
+      // No speed modification to maintain quality
     });
 
     const arrayBuf = await resp.arrayBuffer();

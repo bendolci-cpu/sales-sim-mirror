@@ -1,0 +1,36 @@
+{
+  "id": "8520ef9c-b1c0-4d3f-bfd2-dfbec38e4da2",
+  "createdAt": 1756435166606,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is NICU Manager. Sensitive equipment (warmers, monitors) requires compatible wipes with minimal residue.",
+      "url": "/uploads/aud-1756435100765.mp3"
+    },
+    {
+      "role": "user",
+      "text": "compatible wipes with minimal residue",
+      "url": "/api/audio/3399f716-fe95-45cb-9ba1-5919eb32d674"
+    },
+    {
+      "role": "user",
+      "text": "yes they do what kind of wipes are using",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "We use wipes specifically designed for medical equipment, like those with isopropyl alcohol or quaternary ammonium compounds, ensuring minimal residue.",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "can I talk to you for a second",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Of course! What’s on your mind?",
+      "url": null
+    }
+  ]
+}

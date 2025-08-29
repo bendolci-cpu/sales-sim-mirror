@@ -1,0 +1,36 @@
+{
+  "id": "c5694995-2b8c-431e-8e0f-c3f77d79f737",
+  "createdAt": 1756433033307,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ED Charge Nurse. ED needs sub‑5‑minute room turnovers.",
+      "url": "/uploads/aud-1756433007426.mp3"
+    },
+    {
+      "role": "user",
+      "text": "Eddie needs hey can I interrupt you",
+      "url": "/api/audio/78e9098e-0b37-44b8-898b-32e0f8b08a01"
+    },
+    {
+      "role": "agent",
+      "text": "Of course! What do you need, Eddie?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "of course",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "What’s on your mind?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "hello",
+      "url": null
+    }
+  ]
+}

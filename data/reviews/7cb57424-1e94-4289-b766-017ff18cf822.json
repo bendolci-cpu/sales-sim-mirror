@@ -1,0 +1,66 @@
+{
+  "id": "7cb57424-1e94-4289-b766-017ff18cf822",
+  "createdAt": 1756439713004,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ED Charge Nurse. ED needs sub‑5‑minute room turnovers.",
+      "url": "/uploads/aud-1756439656043.mp3"
+    },
+    {
+      "role": "user",
+      "text": "hey how's it going",
+      "url": "/api/audio/828f9468-cd0f-4114-8e36-420e5b8b90c3"
+    },
+    {
+      "role": "agent",
+      "text": "I'm doing well, thanks! How about you?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "I'm doing all right",
+      "url": "/api/audio/3e181ade-7dcb-4773-a931-effb36713a45"
+    },
+    {
+      "role": "agent",
+      "text": "Glad to hear that! How can I assist you today?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "I just want you to say a long sentence if you could",
+      "url": "/api/audio/6d8f8043-26e6-47da-b315-8940e0e8ee3b"
+    },
+    {
+      "role": "agent",
+      "text": "I appreciate your request, but I prefer to keep things concise. How can I help you more directly?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "can you hear me now",
+      "url": "/api/audio/7e9f17f9-7edb-4c83-8f78-cab1019b663a"
+    },
+    {
+      "role": "agent",
+      "text": "Yes, I can hear you! What would you like to discuss?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "let's talk about a few things I don't know why I hear an echo of my voice",
+      "url": "/api/audio/f51157b3-1e34-47b4-b237-7c0d21b27bd9"
+    },
+    {
+      "role": "user",
+      "text": "and you're an echoey thing",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "that's weird",
+      "url": null
+    }
+  ]
+}

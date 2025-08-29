@@ -1,0 +1,61 @@
+{
+  "id": "d203c827-e830-4346-82fb-f38cba97f495",
+  "createdAt": 1756441447305,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is NICU Manager. Sensitive equipment (warmers, monitors) requires compatible wipes with minimal residue.",
+      "url": "/uploads/aud-1756441401207.mp3"
+    },
+    {
+      "role": "user",
+      "text": "hey how's it going today",
+      "url": "/api/audio/e567ab81-ac38-47f0-9e5e-a3f90ac93845"
+    },
+    {
+      "role": "agent",
+      "text": "I'm doing well, thanks! How about you?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "I'm doing well can you say a long sentence for me",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "I can keep it brief! What specific information do you need?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "hey can interrupt you",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Of course! What’s on your mind?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "you there",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Yes, I’m here! How can I help you?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "I can't hear you",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Can you hear me now?",
+      "url": null
+    }
+  ]
+}

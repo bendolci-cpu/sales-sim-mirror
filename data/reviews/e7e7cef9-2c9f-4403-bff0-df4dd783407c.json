@@ -1,0 +1,41 @@
+{
+  "id": "e7e7cef9-2c9f-4403-bff0-df4dd783407c",
+  "createdAt": 1756434799544,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ED Charge Nurse. ED needs sub‑5‑minute room turnovers.",
+      "url": "/uploads/aud-1756434770859.mp3"
+    },
+    {
+      "role": "user",
+      "text": "hey can I drop",
+      "url": "/api/audio/d2b121c2-6014-47f7-9d1e-a760a2e74f52"
+    },
+    {
+      "role": "agent",
+      "text": "Sure, what do you need to discuss?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "how are you today",
+      "url": "/api/audio/ddf08728-974d-4a57-bb86-ac9fd8f3cc41"
+    },
+    {
+      "role": "agent",
+      "text": "I’m doing well, thank you! How about you?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "good",
+      "url": "/api/audio/a021e82b-10d9-4526-b899-e5f5765d74c4"
+    },
+    {
+      "role": "agent",
+      "text": "Glad to hear that! What’s on your mind today?",
+      "url": null
+    }
+  ]
+}

@@ -128,6 +128,9 @@ export default function ChatWindow({ visible = true, isMock = true, seedMessages
         };
         setMessages(prev => [...prev, botMessage]);
       }, 1000);
+    } else {
+      // In live mode, trigger the AI response through the call flow
+      onUserUtterance?.(text);
     }
   }
 
@@ -195,9 +198,57 @@ export default function ChatWindow({ visible = true, isMock = true, seedMessages
           </form>
         </>
       ) : (
-        <div className="flex flex-1 items-center justify-center px-4 py-8 text-sm text-gray-600">
-          Live mode not yet implemented.
-        </div>
+        <>
+          <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-3">
+            {messages.map(message => (
+              <div key={message.id} className={`flex ${message.sender === "user" ? "justify-end" : "justify-start"}`}>
+                <div
+                  className={`inline-block max-w-[80%] rounded-2xl px-4 py-2 text-sm ${
+                    message.sender === "user"
+                      ? "bg-blue-600 text-white"
+                      : "bg-gray-100 text-gray-900"
+                  }`}
+                >
+                  {message.text}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <form onSubmit={handleSend} className="border-t px-3 py-2">
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={inputValue}
+                onChange={e => setInputValue(e.target.value)}
+                placeholder="Type your message..."
+                className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              {!callActive && !voiceConnected && (
+                <MicRecorder
+                  onTextPartial={async (t) => {
+                    if (!mic.isActive()) { try { await mic.start(); } catch {} }
+                    setInputValue(t);
+                  }}
+                  onTextFinal={async (t) => {
+                    if (!mic.isActive()) { try { await mic.start(); } catch {} }
+                    setInputValue(t);
+                  }}
+                />
+              )}
+              <button
+                type="submit"
+                disabled={!inputValue.trim()}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                Send
+              </button>
+            </div>
+            {callActive && (
+              <p className="mt-1 pl-1 text-[11px] text-gray-500">Voice capture is on—speak naturally.{interim ? ` — ${interim}` : ""}</p>
+            )}
+          </form>
+        </>
       )}
     </div>
   );

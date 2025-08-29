@@ -1,0 +1,36 @@
+{
+  "id": "3595c3b7-2c2d-4cf8-8808-241354275228",
+  "createdAt": 1756434488994,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ICU Nurse Manager + IP. Unit flagged elevated C.",
+      "url": "/uploads/aud-1756434459677.mp3"
+    },
+    {
+      "role": "user",
+      "text": "manager plus IP unit flagged elevated C",
+      "url": "/api/audio/8b71a5da-25b2-4f2d-9cbd-efa3b44f51d2"
+    },
+    {
+      "role": "agent",
+      "text": "Hi, I’m the ICU Nurse Manager and Infection Preventionist. We need to reinforce sporicidal use, like bleach, for isolation rooms and terminal cleans to tackle the elevated C. diff rates.",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "use like bleach for isolation rooms and terminal cleans to tackle the elevated C diff rates",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Yes, using bleach is essential for cleaning isolation rooms and during terminal cleans to effectively reduce C. diff rates. I understand it can be a workflow burden, but it's crucial for patient safety.",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "let's talk",
+      "url": null
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "id": "1799332d-866f-4665-8ac4-1b028768df22",
+  "createdAt": 1756431916200,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is NICU Manager. Sensitive equipment (warmers, monitors) requires compatible wipes with minimal residue.",
+      "url": "/uploads/aud-1756431876004.mp3"
+    },
+    {
+      "role": "user",
+      "text": "hey can you hear me",
+      "url": "/api/audio/cb93a887-defe-4db6-9ef3-f743493e2f75"
+    },
+    {
+      "role": "agent",
+      "text": "Yes, I can hear you! How can I assist you today?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "what are you up to",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "I'm here to help you with any questions about wipe compatibility or equipment care. What do you need?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "I'm not sure what are you doing",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "I'm focused on discussing wipe compatibility for sensitive NICU equipment. Do you have any specific questions about that?",
+      "url": null
+    }
+  ]
+}

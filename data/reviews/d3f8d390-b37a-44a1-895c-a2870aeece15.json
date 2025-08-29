@@ -1,0 +1,51 @@
+{
+  "id": "d3f8d390-b37a-44a1-895c-a2870aeece15",
+  "createdAt": 1756442301358,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ED Charge Nurse. ED needs sub‑5‑minute room turnovers.",
+      "url": "/uploads/aud-1756442249858.mp3"
+    },
+    {
+      "role": "user",
+      "text": "hey can you say another long sentence",
+      "url": "/api/audio/99a2a227-acce-49e3-9587-f460e62a4f73"
+    },
+    {
+      "role": "agent",
+      "text": "Sure! In the ED, our goal is to maintain sub-5-minute room turnovers while ensuring all high-touch surfaces are effectively cleaned with the correct products to prevent bottlenecks.",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "hey hold on",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Of course! Take your time.",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "can you send another long sentence for me",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Absolutely! It's essential that we prioritize both efficiency and thoroughness in our cleaning protocols to ensure patient safety and minimize wait times in the ED.",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "hold on hold on hey hold on",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "hold on",
+      "url": null
+    }
+  ]
+}

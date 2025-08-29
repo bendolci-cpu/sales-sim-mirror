@@ -1,0 +1,66 @@
+{
+  "id": "a9a95f65-901c-41c0-b5b9-24f25f3e5eb2",
+  "createdAt": 1756432569267,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ICU Nurse Manager + IP. Unit flagged elevated C.",
+      "url": "/uploads/aud-1756432528905.mp3"
+    },
+    {
+      "role": "user",
+      "text": "first manager plus IP unit flagged elevated C",
+      "url": "/api/audio/ea56505e-650e-4bc2-8ec2-9d4fdbc1c42e"
+    },
+    {
+      "role": "user",
+      "text": "hey how's it going",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "I'm doing well, thanks! How about you?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "I'm doing good you want to have it quick discussion today about a few things",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Absolutely! What topics do you want to cover?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "let's talk about what disinfectant wipes are using",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "We're focusing on using sporicidal wipes, specifically bleach-based, for effective C. diff control. Are there any concerns you have about using them?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "hey can I drop",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Sure! What would you like to drop?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "can I drop",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Of course! Just let me know what you need to discuss or drop.",
+      "url": null
+    }
+  ]
+}

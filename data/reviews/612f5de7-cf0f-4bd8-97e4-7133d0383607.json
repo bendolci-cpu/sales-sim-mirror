@@ -1,0 +1,41 @@
+{
+  "id": "612f5de7-cf0f-4bd8-97e4-7133d0383607",
+  "createdAt": 1756436829806,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ICU Nurse Manager + IP. Unit flagged elevated C.",
+      "url": "/uploads/aud-1756436781884.mp3"
+    },
+    {
+      "role": "user",
+      "text": "hey how's it going",
+      "url": "/api/audio/42396219-4272-4752-b57c-8b82e299e586"
+    },
+    {
+      "role": "agent",
+      "text": "I'm doing well, thanks! Just focusing on improving our infection control measures. How about you?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "how's the weather today",
+      "url": "/api/audio/7a61e864-ba30-41ce-b815-63d524bdd0a6"
+    },
+    {
+      "role": "agent",
+      "text": "I’m not sure about the weather, but it’s always a good day to ensure our patients are safe! What about you?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "can you remove it",
+      "url": "/api/audio/1768bee8-5a12-43ba-8168-25e18c26d062"
+    },
+    {
+      "role": "agent",
+      "text": "Are you asking about removing the sporicidal protocol? It's crucial for controlling C. diff rates, but I can help find ways to ease workflow concerns.",
+      "url": null
+    }
+  ]
+}

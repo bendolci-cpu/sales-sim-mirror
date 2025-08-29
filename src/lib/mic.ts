@@ -1,109 +1,255 @@
-export type MicStatus = 'idle' | 'requesting' | 'listening' | 'blocked' | 'stopped' | 'error';
-export type MicListener = (s: MicStatus) => void;
+// Microphone management for CloserCoach-style live voice UX
+// Mic always live with AEC, 24kHz mono format
 
-class MicService {
+export class MicrophoneManager {
   private stream: MediaStream | null = null;
-  private recorder: MediaRecorder | null = null;
-  private chunks: Blob[] = [];
-  private status: MicStatus = 'idle';
-  private listeners: Set<MicListener> = new Set();
-
-  onStatus(fn: MicListener) { this.listeners.add(fn); fn(this.status); return () => { this.listeners.delete(fn); }; }
-  private setStatus(s: MicStatus) { this.status = s; this.listeners.forEach(l => l(s)); }
-
-  getStream(): MediaStream | null { return this.stream; }
-  isActive(): boolean { return !!this.stream && this.status === 'listening'; }
-
-  async enumerateAudioInputs(): Promise<MediaDeviceInfo[]> {
+  private audioContext: AudioContext | null = null;
+  private micSource: MediaStreamAudioSourceNode | null = null;
+  private micAnalyzer: AnalyserNode | null = null;
+  private micGain: GainNode | null = null;
+  
+  // VAD state
+  private isListening = false;
+  private ambientLevel = 0;
+  private speechThreshold = 0;
+  private vadWindow = 0;
+  private vadStartTime = 0;
+  
+  // Callbacks
+  private onSpeechStart?: () => void;
+  private onSpeechEnd?: () => void;
+  private onVadUpdate?: (isSpeaking: boolean, level: number) => void;
+  
+  constructor() {}
+  
+  // Initialize microphone with AEC and proper format
+  async initialize(): Promise<MediaStream> {
+    if (this.stream) {
+      return this.stream;
+    }
+    
     try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      return devices.filter(d => d.kind === 'audioinput');
-    } catch { return []; }
-  }
-
-  private async getValidConstraints(prefDeviceId?: string): Promise<MediaStreamConstraints> {
-    const mics = await this.enumerateAudioInputs();
-    let chosen: MediaDeviceInfo | undefined = undefined;
-    if (prefDeviceId) chosen = mics.find(d => d.deviceId === prefDeviceId);
-    if (!chosen) chosen = mics[0];
-    const deviceConstraint = chosen?.deviceId ? { exact: chosen.deviceId } : undefined;
-    return { audio: { deviceId: deviceConstraint, echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } } as any;
-  }
-
-  async start(prefDeviceId?: string): Promise<MediaStream | null> {
-    if (this.isActive()) return this.stream;
-    this.setStatus('requesting');
-    try {
-      const constraints = await this.getValidConstraints(prefDeviceId);
-      // Never persist a deviceId; constraints may have undefined deviceId and still work with {audio:true}-like.
-      const stream = await navigator.mediaDevices.getUserMedia(constraints).catch(async (e) => {
-        // Retry with { audio: true } if constrained request fails
-        return await navigator.mediaDevices.getUserMedia({ audio: true });
-      });
-      this.stream = stream;
-      this.setStatus('listening');
-      return stream;
-    } catch (e: any) {
-      const name = e?.name || '';
-      if (name === 'NotFoundError' || name === 'SecurityError' || name === 'NotAllowedError' || name === 'PermissionDeniedError') this.setStatus('blocked');
-      else this.setStatus('error');
-      throw e;
+      // Request mic with AEC first, 24kHz mono
+      const constraints: MediaStreamConstraints = {
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: false, // Disable auto gain for better VAD
+          channelCount: 1, // Mono
+          sampleRate: 24000, // 24kHz
+          sampleSize: 16, // 16-bit
+          // Additional constraints for better quality
+          googEchoCancellation: true,
+          googNoiseSuppression: true,
+          googAutoGainControl: false,
+          googHighpassFilter: true,
+          googTypingNoiseDetection: true,
+          googAudioMirroring: false
+        } as any
+      };
+      
+      this.stream = await navigator.mediaDevices.getUserMedia(constraints);
+      console.log('[Mic] Initialized with AEC, 24kHz mono');
+      
+      return this.stream;
+    } catch (error) {
+      console.error('[Mic] Failed to initialize:', error);
+      throw error;
     }
   }
-
-  // Method to set an existing stream (useful when stream is obtained elsewhere)
-  setStream(stream: MediaStream): void {
-    this.stream = stream;
-    this.setStatus('listening');
+  
+  // Get the microphone stream (never disable the track)
+  getStream(): MediaStream | null {
+    return this.stream;
   }
-
-  stop(): void {
-    try { this.recorder?.stop(); } catch {}
-    try { this.stream?.getTracks().forEach(t => t.stop()); } catch {}
-    this.stream = null;
-    this.recorder = null;
-    this.chunks = [];
-    this.setStatus('stopped');
+  
+  // Ensure mic track is always enabled
+  ensureMicEnabled(): void {
+    if (this.stream) {
+      const audioTracks = this.stream.getAudioTracks();
+      audioTracks.forEach(track => {
+        if (!track.enabled) {
+          track.enabled = true;
+          console.log('[Mic] Re-enabled mic track');
+        }
+      });
+    }
   }
-
-  startRecording(mime: string = 'audio/webm') {
-    if (!this.stream) throw new Error('No active mic stream');
-    try {
-      const rec = new MediaRecorder(this.stream, { mimeType: mime } as any);
-      this.chunks = [];
-      rec.ondataavailable = (ev: BlobEvent) => { if (ev.data && ev.data.size > 0) this.chunks.push(ev.data); };
-      this.recorder = rec;
-      rec.start(250);
-    } catch (e) { console.error('MediaRecorder start failed', e); }
+  
+  // Setup audio analysis for VAD
+  setupAudioAnalysis(audioContext: AudioContext): void {
+    if (!this.stream || this.audioContext) return;
+    
+    this.audioContext = audioContext;
+    
+    // Create audio nodes
+    this.micSource = audioContext.createMediaStreamSource(this.stream);
+    this.micAnalyzer = audioContext.createAnalyser();
+    this.micGain = audioContext.createGain();
+    
+    // Configure analyzer
+    this.micAnalyzer.fftSize = 256;
+    this.micAnalyzer.smoothingTimeConstant = 0.8;
+    
+    // Connect: mic -> gain -> analyzer (for VAD analysis only, NOT to speakers)
+    this.micSource.connect(this.micGain);
+    this.micGain.connect(this.micAnalyzer);
+    // DO NOT connect to destination - this causes echo!
+    // this.micAnalyzer.connect(audioContext.destination);
+    
+    console.log('[Mic] Audio analysis setup complete');
   }
-
-  async stopRecording(): Promise<Blob | null> {
-    if (!this.recorder) return null;
-    const rec = this.recorder;
-    return new Promise<Blob | null>((resolve) => {
-      try {
-        rec.onstop = () => {
-          try {
-            const blob = new Blob(this.chunks, { type: rec.mimeType });
-            this.chunks = [];
-            resolve(blob);
-          } catch (e) { console.error('Record finalize failed', e); resolve(null); }
-        };
-        rec.stop();
-        this.recorder = null;
-      } catch (e) { console.error('Recorder stop failed', e); resolve(null); }
+  
+  // Start VAD monitoring
+  startVadMonitoring(callbacks: {
+    onSpeechStart?: () => void;
+    onSpeechEnd?: () => void;
+    onVadUpdate?: (isSpeaking: boolean, level: number) => void;
+  }): void {
+    this.onSpeechStart = callbacks.onSpeechStart;
+    this.onSpeechEnd = callbacks.onSpeechEnd;
+    this.onVadUpdate = callbacks.onVadUpdate;
+    
+    this.isListening = true;
+    this.calibrateAmbientLevel();
+    this.startVadLoop();
+    
+    console.log('[Mic] VAD monitoring started');
+  }
+  
+  // Stop VAD monitoring
+  stopVadMonitoring(): void {
+    this.isListening = false;
+    console.log('[Mic] VAD monitoring stopped');
+  }
+  
+  // Calibrate ambient noise level (500ms)
+  private async calibrateAmbientLevel(): Promise<void> {
+    if (!this.micAnalyzer) return;
+    
+    const samples: number[] = [];
+    const sampleCount = 25; // 500ms at 50fps
+    
+    return new Promise((resolve) => {
+      const sample = () => {
+        const level = this.getCurrentLevel();
+        samples.push(level);
+        
+        if (samples.length < sampleCount) {
+          requestAnimationFrame(sample);
+        } else {
+          // Calculate ambient level (average of top 80%)
+          samples.sort((a, b) => b - a);
+          const topCount = Math.floor(samples.length * 0.8);
+          this.ambientLevel = samples.slice(0, topCount).reduce((a, b) => a + b, 0) / topCount;
+          
+          // Set speech threshold (ambient + 12dB)
+          this.speechThreshold = this.ambientLevel * 4; // ~12dB
+          
+          console.log(`[Mic] Calibrated - ambient: ${this.ambientLevel.toFixed(1)}, threshold: ${this.speechThreshold.toFixed(1)}`);
+          resolve();
+        }
+      };
+      
+      sample();
     });
   }
+  
+  // VAD loop
+  private startVadLoop(): void {
+    if (!this.isListening || !this.micAnalyzer) return;
+    
+    const checkVad = () => {
+      if (!this.isListening) return;
+      
+      const currentLevel = this.getCurrentLevel();
+      const isSpeaking = currentLevel > this.speechThreshold;
+      
+      // Update VAD state
+      if (isSpeaking) {
+        if (this.vadWindow === 0) {
+          this.vadWindow = 1;
+          this.vadStartTime = Date.now();
+        } else if (this.vadWindow === 1) {
+          const duration = Date.now() - this.vadStartTime;
+          if (duration >= 120) { // 120ms sustained speech
+            this.vadWindow = 2;
+            this.onSpeechStart?.();
+            console.log('[VAD] Speech started');
+          }
+        }
+      } else {
+        if (this.vadWindow > 0) {
+          this.vadWindow = 0;
+          this.onSpeechEnd?.();
+          console.log('[VAD] Speech ended');
+        }
+      }
+      
+      this.onVadUpdate?.(isSpeaking, currentLevel);
+      
+      requestAnimationFrame(checkVad);
+    };
+    
+    checkVad();
+  }
+  
+  // Get current audio level
+  private getCurrentLevel(): number {
+    if (!this.micAnalyzer) return 0;
+    
+    const bufferLength = this.micAnalyzer.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    this.micAnalyzer.getByteFrequencyData(dataArray);
+    
+    // Calculate RMS level
+    let sum = 0;
+    for (let i = 0; i < bufferLength; i++) {
+      sum += dataArray[i] * dataArray[i];
+    }
+    return Math.sqrt(sum / bufferLength);
+  }
+  
+  // Get current VAD state
+  getVadState(): { isSpeaking: boolean; level: number; ambient: number; threshold: number } {
+    return {
+      isSpeaking: this.vadWindow === 2,
+      level: this.getCurrentLevel(),
+      ambient: this.ambientLevel,
+      threshold: this.speechThreshold
+    };
+  }
+  
+  // Stop microphone
+  stop(): void {
+    this.stopVadMonitoring();
+    
+    if (this.micSource) {
+      this.micSource.disconnect();
+      this.micSource = null;
+    }
+    
+    if (this.micAnalyzer) {
+      this.micAnalyzer.disconnect();
+      this.micAnalyzer = null;
+    }
+    
+    if (this.micGain) {
+      this.micGain.disconnect();
+      this.micGain = null;
+    }
+    
+    if (this.stream) {
+      this.stream.getTracks().forEach(track => track.stop());
+      this.stream = null;
+    }
+    
+    this.audioContext = null;
+    console.log('[Mic] Stopped');
+  }
 }
 
-export const mic = new MicService();
-
-// Small hook for status consumption
-import { useEffect, useState } from 'react';
-export function useMicStatus(): MicStatus {
-  const [s, setS] = useState<MicStatus>('idle');
-  useEffect(() => mic.onStatus(setS), []);
-  return s;
-}
+// Export singleton instance
+export const mic = new MicrophoneManager();
 
 

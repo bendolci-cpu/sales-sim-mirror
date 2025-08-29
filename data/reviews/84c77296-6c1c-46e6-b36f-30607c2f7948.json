@@ -1,0 +1,51 @@
+{
+  "id": "84c77296-6c1c-46e6-b36f-30607c2f7948",
+  "createdAt": 1756436407420,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ICU Nurse Manager + IP. Unit flagged elevated C.",
+      "url": "/uploads/aud-1756436352847.mp3"
+    },
+    {
+      "role": "user",
+      "text": "hey can you hear me",
+      "url": "/api/audio/6135c1b4-5f4e-4903-b6ba-f5dfe43f3cac"
+    },
+    {
+      "role": "agent",
+      "text": "Yes, I can hear you! How can I assist you today?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "how are you doing",
+      "url": "/api/audio/af3a7fad-f856-4976-a1c6-a75d503f92da"
+    },
+    {
+      "role": "agent",
+      "text": "I’m doing well, thanks! How about you?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "good thanks",
+      "url": "/api/audio/2f8a8fbd-c991-4a1c-88fa-29e8a42dc2c2"
+    },
+    {
+      "role": "agent",
+      "text": "Great to hear! What’s on your mind today?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "you want to talk about",
+      "url": "/api/audio/0725b168-e299-46a1-888c-c77350b444d4"
+    },
+    {
+      "role": "agent",
+      "text": "Sure! We can discuss the sporicidal protocol and how to address C. diff rates.",
+      "url": null
+    }
+  ]
+}

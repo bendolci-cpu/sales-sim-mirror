@@ -1,0 +1,11 @@
+{
+  "id": "82404aac-791f-4b23-be28-73d9d9ee35bd",
+  "createdAt": 1756439349396,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ICU Nurse Manager + IP. Unit flagged elevated C.",
+      "url": "/uploads/aud-1756439328218.mp3"
+    }
+  ]
+}

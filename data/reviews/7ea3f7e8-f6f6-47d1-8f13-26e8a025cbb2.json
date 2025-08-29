@@ -1,0 +1,81 @@
+{
+  "id": "7ea3f7e8-f6f6-47d1-8f13-26e8a025cbb2",
+  "createdAt": 1756432205524,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is IP Director + Value Analysis. Annual renewal for Sani‑Cloth AF3 and Bleach Wipes across ICU/ED/OR.",
+      "url": "/uploads/aud-1756432143245.mp3"
+    },
+    {
+      "role": "user",
+      "text": "and bleach wipes across icuedor",
+      "url": "/api/audio/7088b863-17ee-4737-8fec-b6e75370beac"
+    },
+    {
+      "role": "user",
+      "text": "hey can you hear me",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "We’re looking to standardize to one SKU for efficiency. Can we discuss the cost per use and ensure we meet contact time compliance?",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Yes, I can hear you! How can I assist you today?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "what are you up to",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "I'm here to help discuss the bundle renewal for Sani‑Cloth AF3 and Bleach Wipes. What specific concerns do you have?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "I'm here to help you",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Great! Let's talk about standardizing our SKU and ensuring we meet all compliance and training needs. What are your thoughts?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "well I have a lot the first is the cost",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Absolutely, cost per use is crucial. Let’s break down the numbers and see how we can optimize that.",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "let's break down the numbers and see how we can optimize that okay cool",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Sounds good! I'll pull up the cost data for both products and we can compare their efficiency.",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "sounds good",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Great! I’ll have those numbers ready for our discussion. Anything else you want to cover while we’re at it?",
+      "url": null
+    }
+  ]
+}

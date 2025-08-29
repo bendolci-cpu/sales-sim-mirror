@@ -45,6 +45,16 @@ export default function Home() {
               </div>
             </div>
           )}
+          
+          {/* Audio Test Link */}
+          <div className="mt-4 text-center">
+            <a 
+              href="/test-audio" 
+              className="text-sm text-blue-600 hover:text-blue-800 underline"
+            >
+              Test your microphone and speakers first
+            </a>
+          </div>
         </div>
 
         <div className="mt-10 grid w-full grid-cols-1 gap-6 md:grid-cols-2"> 

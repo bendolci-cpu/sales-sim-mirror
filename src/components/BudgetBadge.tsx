@@ -11,6 +11,14 @@ type BudgetResp = {
   max: number;
 };
 
+// Helper function to format currency with appropriate decimal places
+function formatCurrency(amount: number): string {
+  if (amount === 0) return "$0.00";
+  if (amount < 0.01) return `$${amount.toFixed(6)}`;
+  if (amount < 0.1) return `$${amount.toFixed(4)}`;
+  return `$${amount.toFixed(2)}`;
+}
+
 export default function BudgetBadge() {
   const [data, setData] = useState<BudgetResp | null>(null);
 
@@ -50,7 +58,7 @@ export default function BudgetBadge() {
       title={allowed ? "Budget status" : "Budget cap reached"}
     >
       <span className="font-medium">Budget:</span>
-      <span>${usage.toFixed(2)} / ${max.toFixed(2)}</span>
+      <span>{formatCurrency(usage)} / {formatCurrency(max)}</span>
     </div>
   );
 }

@@ -1,0 +1,36 @@
+{
+  "id": "73c8ed7b-acb5-43bb-bfd5-64ce2e5c36c1",
+  "createdAt": 1756433830173,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ICU Nurse Manager + IP. Unit flagged elevated C.",
+      "url": "/uploads/aud-1756433762453.mp3"
+    },
+    {
+      "role": "user",
+      "text": "hey can I interrupt",
+      "url": "/api/audio/a207c09d-6642-43b8-946c-a0d2d31938b7"
+    },
+    {
+      "role": "user",
+      "text": "how are you doing today",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "I'm doing well, thank you! How about you?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "I'm doing all right just want to talk to you in a few things what are you using from a product perspective in your operating room",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "In the operating room, we primarily use sporicidal solutions like bleach for cleaning and terminal cleans, especially for high-risk infections like C. diff. What specific concerns do you have?",
+      "url": null
+    }
+  ]
+}

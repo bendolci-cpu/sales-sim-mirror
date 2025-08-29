@@ -55,14 +55,14 @@ export function createWebSpeech(handlers: Handlers): WebSpeechControls | null {
     rec.onend = () => {
       active = false;
       if (!endedExternally && restartCount < MAX_RESTARTS) {
-        // Add delay before restart to prevent rapid cycling
+        // Add minimal delay before restart to prevent rapid cycling
         restartCount++;
         console.log(`[WebSpeech] Restarting (${restartCount}/${MAX_RESTARTS})...`);
         setTimeout(() => {
           if (!endedExternally) {
             start();
           }
-        }, 1000); // 1 second delay
+        }, 150); // Reduced delay for faster response
       } else if (restartCount >= MAX_RESTARTS) {
         console.warn("[WebSpeech] Max restarts reached, stopping");
         endedExternally = true;

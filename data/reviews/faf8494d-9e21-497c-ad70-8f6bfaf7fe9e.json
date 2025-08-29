@@ -1,0 +1,41 @@
+{
+  "id": "faf8494d-9e21-497c-ad70-8f6bfaf7fe9e",
+  "createdAt": 1756439950144,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is IP Director + Value Analysis. Annual renewal for Sani‑Cloth AF3 and Bleach Wipes across ICU/ED/OR.",
+      "url": "/uploads/aud-1756439909929.mp3"
+    },
+    {
+      "role": "user",
+      "text": "how's it going",
+      "url": "/api/audio/197cbd77-9d8c-44fe-ae15-dd802562af82"
+    },
+    {
+      "role": "agent",
+      "text": "It's going well, thanks! How about you?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "I'm doing well can we talk about something today",
+      "url": "/api/audio/fd7aaf48-2659-4220-828d-5720adea0287"
+    },
+    {
+      "role": "agent",
+      "text": "Absolutely! What would you like to discuss?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "say a long sentence",
+      "url": "/api/audio/1b537a35-f9f5-4d99-b54c-bf4246b9bc8f"
+    },
+    {
+      "role": "agent",
+      "text": "Sure! It’s important to consider not only the effectiveness of our cleaning solutions but also how standardizing to one SKU can enhance compliance, streamline training, and ultimately reduce costs per use across all departments.",
+      "url": null
+    }
+  ]
+}

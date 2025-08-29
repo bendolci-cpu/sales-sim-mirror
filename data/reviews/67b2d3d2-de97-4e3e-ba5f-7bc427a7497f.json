@@ -1,0 +1,86 @@
+{
+  "id": "67b2d3d2-de97-4e3e-ba5f-7bc427a7497f",
+  "createdAt": 1756441948361,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ED Charge Nurse. ED needs sub‑5‑minute room turnovers.",
+      "url": "/uploads/aud-1756441858698.mp3"
+    },
+    {
+      "role": "user",
+      "text": "hey can you say a long sentence for me",
+      "url": "/api/audio/dfc01556-1425-4e3f-9ff0-01511c789fcd"
+    },
+    {
+      "role": "agent",
+      "text": "I can help you with concise information or answers, but I can't provide long sentences. What do you need?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "hey hold on",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Sure, take your time!",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "can you set another alarm sentence",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "I can’t set alarms, but I can help remind you to do it! What time do you need?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "hey hold on hey hold on",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "No problem, I’m here when you’re ready!",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "can you send another long sentence",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "I focus on providing clear and concise responses, but I can help with any specific information you need! Just let me know.",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "hey wait a minute",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Sure, take your time! Let me know when you're ready.",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "can you send another long sentence",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "I’m here to assist you, but I stick to shorter, more effective communication. What specific information are you looking for?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "hold on",
+      "url": null
+    }
+  ]
+}

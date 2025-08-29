@@ -1,0 +1,61 @@
+{
+  "id": "abfbdef3-4a31-43d4-9b47-f203985627d8",
+  "createdAt": 1756441597058,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ICU Nurse Manager + IP. Unit flagged elevated C.",
+      "url": "/uploads/aud-1756441546426.mp3"
+    },
+    {
+      "role": "user",
+      "text": "hey how's it going today",
+      "url": "/api/audio/0a8976f9-8463-486d-9adf-b8d142c411bc"
+    },
+    {
+      "role": "agent",
+      "text": "I'm doing well, thanks! How about you?",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "good can you say a long sentence",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Sure! It's important that we stay focused on our infection control protocols, especially with the elevated C. diff rates in our unit.",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "hey can I drop you",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Of course! Just let me know if you need anything later.",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "hey hold on",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Sure, take your time!",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "can you say another long sentence",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Absolutely! We need to emphasize the importance of using sporicidal agents like bleach for all isolation rooms and terminal cleans to effectively combat the elevated C. diff rates, while also finding ways to address any workflow challenges and odor concerns that may arise.",
+      "url": null
+    }
+  ]
+}
