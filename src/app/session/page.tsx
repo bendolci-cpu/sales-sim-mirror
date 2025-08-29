@@ -101,7 +101,7 @@ function SessionInner() {
         }
         
         const data = await response.json();
-        aiResponse = data.response;
+        aiResponse = data.content || data.response || "I didn't catch that. Could you please repeat?";
         logInfo(`[Session] Generated live response: ${aiResponse}`);
       }
       

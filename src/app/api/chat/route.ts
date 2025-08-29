@@ -43,8 +43,8 @@ export async function POST(req: NextRequest) {
       { role: "system", content: systemMessage },
       ...messages.map((msg: any) => ({
         role: msg.role === "user" ? "user" : "assistant",
-        content: msg.text || msg.content
-      }))
+        content: msg.text || msg.content || ""
+      })).filter(msg => msg.content && msg.content.trim() !== "")
     ];
 
     console.log("[Chat] Generating response for messages:", openaiMessages.length);

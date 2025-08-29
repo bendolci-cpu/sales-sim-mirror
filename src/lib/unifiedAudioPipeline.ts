@@ -160,7 +160,11 @@ export class UnifiedAudioPipeline {
       
       // Play audio
       await new Promise<void>((resolve, reject) => {
-        const abortController = this.currentTTSAbortController!;
+        const abortController = this.currentTTSAbortController;
+        if (!abortController) {
+          reject(new Error('TTS abort controller not available'));
+          return;
+        }
         
         audioElement.addEventListener('canplaythrough', () => {
           if (abortController.signal.aborted) {
