@@ -57,7 +57,7 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="mt-10 grid w-full grid-cols-1 gap-6 md:grid-cols-2"> 
+        <div className="mt-10 grid w-full grid-cols-1 gap-6 md:grid-cols-3"> 
           <div className="group rounded-2xl border border-gray-200 bg-white p-8 shadow transition hover:shadow-md">
             <div className="flex h-full flex-col items-start">
               <div className="rounded-lg bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">Challenge</div>
@@ -122,6 +122,40 @@ export default function Home() {
                 className="inline-flex items-center rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Start Practice
+              </button>
+            </div>
+          </div>
+
+          <div className="group rounded-2xl border border-gray-200 bg-white p-8 shadow transition hover:shadow-md">
+            <div className="flex h-full flex-col items-start">
+              <div className="rounded-lg bg-purple-50 px-3 py-1 text-xs font-medium text-purple-700">Clean</div>
+              <h2 className="mt-4 text-xl font-semibold text-gray-900">Clean Session</h2>
+              <p className="mt-2 text-sm text-gray-600">New unified audio pipeline - no overlapping systems.</p>
+            </div>
+            <div className="mt-6">
+              <button
+                disabled={!scenarioId}
+                onClick={() => {
+                  if (!selected) return;
+                  const url = `/session/clean?mode=practice&mock=1&scenario=${encodeURIComponent(scenarioId)}`;
+                  // eslint-disable-next-line no-console
+                  console.log("[Home] Start Clean Session →", { url });
+                  addSession({
+                    id: crypto.randomUUID(),
+                    ts: Date.now(),
+                    mode: "clean",
+                    scenarioId,
+                    scenarioTitle: selected.title,
+                    callPoint: selected.callPoint,
+                    topic: selected.topic,
+                    url,
+                  });
+                  setSessions(getSessions());
+                  router.push(url);
+                }}
+                className="inline-flex items-center rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Start Clean Session
               </button>
             </div>
           </div>

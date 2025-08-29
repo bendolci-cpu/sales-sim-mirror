@@ -2,6 +2,7 @@
 // IMPORTANT: This component should NEVER call web-speech, TTS, mic, or LiveKit
 // It only plays pre-recorded audio files sequentially for AGENT turns only
 import { useMemo, useState, useRef } from "react";
+import { logInfo, logSummary } from "@/lib/logger";
 
 type Turn = { role: "user" | "assistant" | "agent"; text: string; url?: string | null; audioUrl?: string | null };
 
@@ -13,8 +14,8 @@ export default function ReviewPlayer({ turns }: { turns: Turn[] }) {
   
     // Filter turns with audio and deduplicate agent turns
   const turnsWithAudio = useMemo(() => {
-    console.log("[ReviewPlayer] All turns:", turns);
-    console.log("[ReviewPlayer] Turn details:", turns.map(t => ({ role: t.role, url: t.url, audioUrl: t.audioUrl, hasUrl: !!t.url, hasAudioUrl: !!t.audioUrl })));
+    logSummary("[ReviewPlayer] All turns", turns);
+    logSummary("[ReviewPlayer] Turn details", turns.map(t => ({ role: t.role, url: t.url, audioUrl: t.audioUrl, hasUrl: !!t.url, hasAudioUrl: !!t.audioUrl })));
     
     // Play ALL turns that have a URL (both user and agent turns)
     // Note: API uses "agent" role, not "assistant"
@@ -23,12 +24,12 @@ export default function ReviewPlayer({ turns }: { turns: Turn[] }) {
       const url = t.url || t.audioUrl;
       return url && !url.startsWith('blob:');
     });
-    console.log("[ReviewPlayer] All turns with URLs:", filtered);
+    logSummary("[ReviewPlayer] All turns with URLs", filtered);
     
     // Prevent auto-play on first load
     if (!hasAutoPlayedRef.current && filtered.length > 0) {
       hasAutoPlayedRef.current = true;
-      console.log("[ReviewPlayer] Preventing auto-play on first load");
+      logInfo("[ReviewPlayer] Preventing auto-play on first load");
       
       // Also stop any existing audio that might be playing
       const audioElements = document.querySelectorAll('audio');
@@ -53,14 +54,14 @@ export default function ReviewPlayer({ turns }: { turns: Turn[] }) {
       if (previous && 
           previous.role === current.role && 
           current.text === previous.text) {
-        console.log("[ReviewPlayer] Skipping duplicate turn:", current.text);
+        logInfo("[ReviewPlayer] Skipping duplicate turn:", current.text);
         continue;
       }
       
       deduplicated.push(current);
     }
     
-    console.log("[ReviewPlayer] Final turns to play:", deduplicated);
+    logSummary("[ReviewPlayer] Final turns to play", deduplicated);
     return deduplicated;
   }, [turns]);
 

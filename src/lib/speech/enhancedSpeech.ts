@@ -1,5 +1,7 @@
 // CloserCoach-style speech recognition with continuous ASR + VAD gates
 // One recognizer instance kept warm, no auto-restart loops
+import { logInfo, logDebug, logThrottled, logChange } from "@/lib/logger";
+import { sendMessage } from "@/lib/messageDispatcher";
 
 export interface EnhancedSpeechControls {
   start: () => void;
@@ -283,6 +285,15 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
         // Check if combined utterance passes gates
         if (passesUtteranceGates(combinedText, Math.min(confidence, pendingConfidence), combinedDuration)) {
           handlers.onFinal?.(combinedText);
+          
+          // Send to message dispatcher for AI processing
+          sendMessage(combinedText, {
+            source: 'voice',
+            confidence: Math.min(confidence, pendingConfidence),
+            duration: combinedDuration
+          }).catch(error => {
+            logError('[Speech] Failed to send combined message to dispatcher', { error, text: combinedText });
+          });
         } else {
           console.log(`[Speech] Combined utterance failed gates or is duplicate`);
         }
@@ -293,21 +304,39 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
       } else {
         // No pending utterance, commit the current one
         handlers.onFinal?.(text);
+        
+        // Send to message dispatcher for AI processing
+        sendMessage(text, {
+          source: 'voice',
+          confidence,
+          duration
+        }).catch(error => {
+          logError('[Speech] Failed to send message to dispatcher', { error, text });
+        });
       }
     }, COMMIT_WINDOW_MS);
   }
 
   // Create and configure speech recognition (kept warm)
   function createRecognizer() {
+    logInfo("[Speech] Creating speech recognizer");
+    
     if (rec) {
       try {
         rec.stop();
+        logInfo("[Speech] Stopped existing recognizer");
       } catch (e) {
         // Ignore stop errors
       }
     }
     
-    rec = new SR();
+    try {
+      rec = new SR();
+      logInfo("[Speech] Speech recognizer created successfully");
+    } catch (error) {
+      logError("[Speech] Failed to create speech recognizer", { error });
+      return;
+    }
     
     // CloserCoach-style configuration for continuous ASR
     rec.continuous = true;
@@ -315,17 +344,24 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
     rec.maxAlternatives = 1;
     rec.lang = 'en-US';
     
+    logInfo("[Speech] Speech recognizer configured", {
+      continuous: rec.continuous,
+      interimResults: rec.interimResults,
+      maxAlternatives: rec.maxAlternatives,
+      lang: rec.lang
+    });
+    
     // Enhanced event handling
     rec.onstart = () => {
       active = true;
       isRecording = true;
-      console.log("[Speech] Recognition started");
+      logInfo("[Speech] Recognition started");
     };
     
     rec.onend = () => {
       active = false;
       isRecording = false;
-      console.log("[Speech] Recognition ended");
+      logInfo("[Speech] Recognition ended");
       
       // NO AUTO-RESTART - recognizer stays created and started
       // Only restart if externally ended and not in quiet gate
@@ -359,24 +395,25 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
     
     rec.onaudiostart = () => {
       micTrackLive = true;
-      console.log("[Speech] Audio started");
+      logInfo("[Speech] Audio started - microphone detected");
     };
     
     rec.onaudioend = () => {
       micTrackLive = false;
-      console.log("[Speech] Audio ended");
+      logInfo("[Speech] Audio ended - microphone stopped");
     };
     
     rec.onsoundstart = () => {
       if (speechStartTime === 0) {
         speechStartTime = Date.now();
+        console.log("[Speech] Speech started at", speechStartTime);
+        
+        // Call speech start handler
         handlers.onSpeechStart?.();
         
         // Trigger barge-in callback when speech starts
         // This allows the session to detect when user starts speaking during AI playback
         handlers.onBargeIn?.();
-        
-        console.log("[Speech] Speech started at", speechStartTime);
       }
     };
     
@@ -389,6 +426,7 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
       }
       
       eosDebounceTimer = setTimeout(() => {
+        console.log("[Speech] Calling onSpeechEnd handler");
         handlers.onSpeechEnd?.();
         speechStartTime = 0;
       }, EOS_DEBOUNCE_MS);
@@ -397,6 +435,12 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
     rec.onresult = (event: any) => {
       let interim = "";
       let final = "";
+      
+      logInfo("[Speech] onresult called", { 
+        resultIndex: event.resultIndex, 
+        resultsLength: event.results.length,
+        hasResults: event.results.length > 0
+      });
       
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
@@ -409,12 +453,14 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
       
       // Handle interim results
       if (interim.trim()) {
+        logInfo("[Speech] Interim result", { text: interim.trim() });
         handlers.onInterim?.(interim.trim());
       }
       
       // Handle final results
       if (final.trim()) {
         const confidence = event.results[event.results.length - 1][0].confidence || 0.9;
+        logInfo("[Speech] Final result", { text: final.trim(), confidence });
         processFinalUtterance(final.trim(), confidence, speechStartTime || Date.now());
       }
     };
@@ -458,12 +504,32 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
   }
 
   return {
-    start: () => {
+    start: async () => {
       endedExternally = false;
+      logInfo("[Speech] Starting speech recognition");
+      
+      // Check microphone permissions first
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        logInfo("[Speech] Microphone permission granted");
+        // Stop the stream since we just needed permission
+        stream.getTracks().forEach(track => track.stop());
+      } catch (error) {
+        logError("[Speech] Microphone permission denied", { error });
+        return;
+      }
+      
       createRecognizer();
       if (rec) {
-        rec.start();
-        active = true; // Set active immediately when starting
+        try {
+          rec.start();
+          active = true; // Set active immediately when starting
+          logInfo("[Speech] Speech recognition started successfully");
+        } catch (error) {
+          logError("[Speech] Failed to start speech recognition", { error });
+        }
+      } else {
+        logError("[Speech] Failed to create speech recognizer");
       }
       startHealthMonitoring();
     },

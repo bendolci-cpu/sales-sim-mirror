@@ -1,7 +1,7 @@
 export type SavedSession = {
   id: string;
   ts: number;
-  mode: "challenge" | "practice";
+  mode: "challenge" | "practice" | "clean";
   scenarioId: string;
   scenarioTitle: string;
   callPoint: string;

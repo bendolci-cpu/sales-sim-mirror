@@ -1,5 +1,6 @@
 // Microphone management for CloserCoach-style live voice UX
 // Mic always live with AEC, 24kHz mono format
+import { logInfo, logDebug, logChange } from "@/lib/logger";
 
 export class MicrophoneManager {
   private stream: MediaStream | null = null;
@@ -22,10 +23,50 @@ export class MicrophoneManager {
   
   constructor() {}
   
+  // Singleton mic stream getter - reuse if already created and live
+  async getMicStream(): Promise<MediaStream> {
+    if (this.stream) {
+      const track = this.stream.getAudioTracks()[0];
+      if (track && track.readyState === 'live') {
+        logChange('mic-stream-state', track.readyState, '[Mic] Reusing existing mic stream', { 
+          id: track.id, 
+          enabled: track.enabled, 
+          muted: track.muted, 
+          state: track.readyState 
+        });
+        return this.stream;
+      }
+    }
+    
+    return this.initialize();
+  }
+  
+  // Get the mic track directly
+  getMicTrack(): MediaStreamTrack | null {
+    if (!this.stream) return null;
+    const tracks = this.stream.getAudioTracks();
+    return tracks.length > 0 ? tracks[0] : null;
+  }
+  
+  // Check if mic is live
+  isLive(): boolean {
+    const track = this.getMicTrack();
+    return track ? track.readyState === 'live' : false;
+  }
+  
   // Initialize microphone with AEC and proper format
   async initialize(): Promise<MediaStream> {
     if (this.stream) {
-      return this.stream;
+      const track = this.stream.getAudioTracks()[0];
+      if (track && track.readyState === 'live') {
+        logChange('mic-stream-state', track.readyState, '[Mic] Reusing existing mic stream', { 
+          id: track.id, 
+          enabled: track.enabled, 
+          muted: track.muted, 
+          state: track.readyState 
+        });
+        return this.stream;
+      }
     }
     
     try {
@@ -49,7 +90,13 @@ export class MicrophoneManager {
       };
       
       this.stream = await navigator.mediaDevices.getUserMedia(constraints);
-      console.log('[Mic] Initialized with AEC, 24kHz mono');
+      const track = this.stream.getAudioTracks()[0];
+      logInfo('[Mic] Initialized with AEC, 24kHz mono', { 
+        id: track.id, 
+        enabled: track.enabled, 
+        muted: track.muted, 
+        state: track.readyState 
+      });
       
       return this.stream;
     } catch (error) {
@@ -70,7 +117,12 @@ export class MicrophoneManager {
       audioTracks.forEach(track => {
         if (!track.enabled) {
           track.enabled = true;
-          console.log('[Mic] Re-enabled mic track');
+          console.log('[Mic] Re-enabled mic track', { 
+            id: track.id, 
+            enabled: track.enabled, 
+            muted: track.muted, 
+            state: track.readyState 
+          });
         }
       });
     }
@@ -117,7 +169,7 @@ export class MicrophoneManager {
     console.log('[Mic] VAD monitoring started');
   }
   
-  // Stop VAD monitoring
+  // Stop VAD monitoring (DOES NOT stop the mic track)
   stopVadMonitoring(): void {
     this.isListening = false;
     console.log('[Mic] VAD monitoring stopped');
@@ -220,8 +272,14 @@ export class MicrophoneManager {
     };
   }
   
-  // Stop microphone
-  stop(): void {
+  // Stop microphone (only call during final teardown)
+  stop(teardown = false): void {
+    if (!teardown && process.env.NODE_ENV === 'development') {
+      console.warn('[Mic] Attempted to stop mic before final teardown - blocking in dev mode');
+      console.warn('[Mic] Call mic.stop(true) only during final teardown/navigation');
+      return;
+    }
+    
     this.stopVadMonitoring();
     
     if (this.micSource) {

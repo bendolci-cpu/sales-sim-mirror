@@ -18,6 +18,9 @@ class AudioManager {
   private currentTtsSource: AudioBufferSourceNode | null = null;
   private currentTtsBuffer: AudioBuffer | null = null;
   
+  // Callback for modular system
+  public onAiAudioReady: (() => void) | null = null;
+  
   // Audio format constants
   private readonly SAMPLE_RATE = 24000; // 24kHz mono
   private readonly CHANNEL_COUNT = 1; // Mono
@@ -241,6 +244,14 @@ class AudioManager {
       source.start(0);
       console.log(`[TTS] Started playback: ${audioBuffer.duration.toFixed(2)}s`);
       
+      // Create AI analyzer for modular system
+      this.getAiAnalyzer();
+      
+      // Emit aiAudioReady event for modular system
+      if (this.onAiAudioReady) {
+        this.onAiAudioReady();
+      }
+      
       // Handle completion
       source.onended = () => {
         if (this.currentTtsSource === source) {
@@ -276,6 +287,13 @@ class AudioManager {
       this.currentTtsSource = null;
       this.currentTtsBuffer = null;
     }
+    
+    // Clean up AI analyzer
+    if (this._aiAnalyzer) {
+      this._aiAnalyzer.disconnect();
+      this._aiAnalyzer = null;
+      console.log('[LegacyAudioManager] Cleaned up AI analyzer');
+    }
   }
   
   // Create analyzer for AI audio monitoring
@@ -293,6 +311,19 @@ class AudioManager {
     
     return analyser;
   }
+  
+  // Get the AI analyzer (for modular system)
+  getAiAnalyzer(): AnalyserNode | null {
+    // Create and cache the AI analyzer
+    if (!this._aiAnalyzer) {
+      this._aiAnalyzer = this.createAiAnalyzer();
+      console.log("[LegacyAudioManager] Created AI analyzer for modular system");
+    }
+    return this._aiAnalyzer;
+  }
+  
+  // Private property to cache the AI analyzer
+  private _aiAnalyzer: AnalyserNode | null = null;
   
   // Get audio format info
   getAudioFormat() {

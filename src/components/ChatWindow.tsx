@@ -4,6 +4,8 @@ import React, { FormEvent, useEffect, useRef, useState } from "react";
 import MicRecorder from "@/components/MicRecorder";
 import { mic } from "@/lib/mic";
 import { SpeechManager } from "@/lib/voice/SpeechManager";
+import { logInfo, logSummary } from "@/lib/logger";
+import { sendMessage } from "@/lib/messageDispatcher";
 
 type Message = {
   id: number;
@@ -129,8 +131,13 @@ export default function ChatWindow({ visible = true, isMock = true, seedMessages
         setMessages(prev => [...prev, botMessage]);
       }, 1000);
     } else {
-      // In live mode, trigger the AI response through the call flow
-      onUserUtterance?.(text);
+      // In live mode, use the message dispatcher for consistency
+      sendMessage(text, {
+        source: 'text'
+      }).catch(error => {
+        logInfo('[ChatWindow] Failed to send message to dispatcher, falling back to onUserUtterance', { error });
+        onUserUtterance?.(text);
+      });
     }
   }
 

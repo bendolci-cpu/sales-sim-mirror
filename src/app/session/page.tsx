@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { Room, createLocalAudioTrack } from "livekit-client";
+import { Room, createLocalAudioTrack, Track } from "livekit-client";
 import { useRef, useState, useMemo, useEffect, Suspense } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
@@ -20,6 +20,389 @@ import { saveCall } from "@/lib/calls/store";
 import type { CallMeta, CallTurn } from "@/lib/calls/types";
 import { mic } from "@/lib/mic";
 import { audioManager } from "@/lib/audio";
+import { logInfo, logDebug, logThrottled, logChange, logWarn, logError } from "@/lib/logger";
+import { registerMessageHandler, unregisterMessageHandler, setMessageDispatcherConnected } from "@/lib/messageDispatcher";
+
+// 1. CallSession → state machine, owns truth for ai_playing, barge_enabled, user_speaking
+class CallSession {
+  private state: 'idle' | 'user_speaking' | 'ai_thinking' | 'ai_playing' = 'idle';
+  private aiPlaying = false;
+  private bargeEnabled = false;
+  private userSpeaking = false;
+  private listeners: Array<(state: string) => void> = [];
+
+  setState(newState: 'idle' | 'user_speaking' | 'ai_thinking' | 'ai_playing') {
+    this.state = newState;
+    this.listeners.forEach(listener => listener(newState));
+  }
+
+  setAIPlaying(playing: boolean) {
+    this.aiPlaying = playing;
+  }
+
+  setBargeEnabled(enabled: boolean) {
+    this.bargeEnabled = enabled;
+  }
+
+  setUserSpeaking(speaking: boolean) {
+    this.userSpeaking = speaking;
+  }
+
+  getState() { return this.state; }
+  isAIPlaying() { return this.aiPlaying; }
+  isBargeEnabled() { return this.bargeEnabled; }
+  isUserSpeaking() { return this.userSpeaking; }
+
+  onStateChange(listener: (state: string) => void) {
+    this.listeners.push(listener);
+    return () => {
+      const index = this.listeners.indexOf(listener);
+      if (index > -1) this.listeners.splice(index, 1);
+    };
+  }
+}
+
+// 2. AudioManager → creates AudioContext, mixers, analyzers; raises events like onAIAudioPlay
+class AudioManager {
+  private audioContext: AudioContext | null = null;
+  private micAnalyzer: AnalyserNode | null = null;
+  private aiAnalyzer: AnalyserNode | null = null;
+  private micSource: MediaStreamAudioSourceNode | null = null;
+  private aiSource: MediaElementAudioSourceNode | null = null;
+  private listeners: Array<{ event: string; callback: Function }> = [];
+
+  async initializeAudioContext(): Promise<AudioContext> {
+    if (!this.audioContext) {
+      this.audioContext = new AudioContext({ sampleRate: 24000 });
+      await this.audioContext.resume();
+    }
+    return this.audioContext;
+  }
+
+  setupMicAnalyzer(stream: MediaStream) {
+    if (!this.audioContext) return;
+    
+    this.micAnalyzer = this.audioContext.createAnalyser();
+    this.micAnalyzer.fftSize = 256;
+    this.micAnalyzer.smoothingTimeConstant = 0.8;
+    
+    this.micSource = this.audioContext.createMediaStreamSource(stream);
+    this.micSource.connect(this.micAnalyzer);
+    
+    logInfo("[AudioManager] Mic analyzer setup complete");
+  }
+
+  setupAIAnalyzer(audioElement: HTMLAudioElement) {
+    if (!this.audioContext) return;
+    
+    // Check if this audio element is already connected
+    if (this.aiSource && this.aiSource.mediaElement === audioElement) {
+      logDebug("[AudioManager] AI analyzer already attached to this audio element - reusing");
+      this.emit('aiAudioReady');
+      return;
+    }
+    
+    // Clean up existing AI analyzer
+    if (this.aiSource) {
+      this.aiSource.disconnect();
+      this.aiSource = null;
+    }
+    
+    this.aiAnalyzer = this.audioContext.createAnalyser();
+    this.aiAnalyzer.fftSize = 256;
+    this.aiAnalyzer.smoothingTimeConstant = 0.8;
+    
+    try {
+      this.aiSource = this.audioContext.createMediaElementSource(audioElement);
+      this.aiSource.connect(this.aiAnalyzer);
+      
+      console.log("[AudioManager] AI analyzer setup complete");
+      this.emit('aiAudioReady');
+    } catch (error) {
+      console.warn("[AudioManager] Failed to setup AI analyzer - audio element may already be connected:", error);
+      // Don't emit aiAudioReady if setup failed
+    }
+  }
+
+  getMicAnalyzer() { return this.micAnalyzer; }
+  getAIAnalyzer() { 
+    // If we have a modular AI analyzer, use it
+    if (this.aiAnalyzer) {
+      console.log("[AudioManager] Using modular AI analyzer");
+      return this.aiAnalyzer;
+    }
+    
+    // Otherwise, try to get from legacy system
+    try {
+      // Access the global audioManager instance
+      const legacyAnalyzer = (window as any).__audioManager?.getAiAnalyzer();
+      if (legacyAnalyzer) {
+        console.log("[AudioManager] Using legacy AI analyzer");
+        return legacyAnalyzer;
+      } else {
+        console.log("[AudioManager] No legacy AI analyzer available");
+      }
+    } catch (e) {
+      console.warn("[AudioManager] Failed to get legacy AI analyzer:", e);
+    }
+    
+    console.log("[AudioManager] No AI analyzer available");
+    return null;
+  }
+
+  on(event: string, callback: Function) {
+    this.listeners.push({ event, callback });
+  }
+
+  emit(event: string, data?: any) {
+    this.listeners.forEach(({ event: listenerEvent, callback }) => {
+      if (listenerEvent === event && callback) callback(data);
+    });
+  }
+
+  cleanup() {
+    if (this.micSource) this.micSource.disconnect();
+    if (this.aiSource) this.aiSource.disconnect();
+    this.micAnalyzer = null;
+    this.aiAnalyzer = null;
+  }
+}
+
+// 3. ASRManager → runs recognition, exposes isSpeech()
+class ASRManager {
+  private speechInstance: EnhancedSpeechControls | null = null;
+  private isSpeechDetected = false;
+  private listeners: Array<{ event: string; callback: Function }> = [];
+
+  startRecognition() {
+    if (this.speechInstance) return;
+    
+    // Connect to the existing speech recognition system instead of creating a new one
+    // The legacy system is already running and working
+    console.log("[ASRManager] Connecting to existing speech recognition system");
+  }
+
+  // Method to update speech detection state from the legacy system
+  updateSpeechState(isSpeaking: boolean) {
+    const wasSpeaking = this.isSpeechDetected;
+    this.isSpeechDetected = isSpeaking;
+    logChange('asr-speech-state', isSpeaking, '[ASRManager] Speech state updated');
+    if (isSpeaking) {
+      this.emit('speechStart');
+    } else {
+      this.emit('speechEnd');
+    }
+  }
+
+  stopRecognition() {
+    if (this.speechInstance) {
+      this.speechInstance.stop();
+      this.speechInstance = null;
+    }
+  }
+
+  isSpeech() { 
+    return this.isSpeechDetected; 
+  }
+
+  on(event: string, callback: Function) {
+    this.listeners.push({ event, callback });
+  }
+
+  emit(event: string, data?: any) {
+    this.listeners.forEach(({ event: listenerEvent, callback }) => {
+      if (listenerEvent === event && callback) callback(data);
+    });
+  }
+}
+
+// 4. BargeInDetector → subscribes to AudioManager + ASRManager; emits BARGE_IN only if both confirm
+class BargeInDetector {
+  private audioManager: AudioManager;
+  private asrManager: ASRManager;
+  private callSession: CallSession;
+  private monitoring = false;
+  private timer: NodeJS.Timeout | null = null;
+  private listeners: Array<{ event: string; callback: Function }> = [];
+
+  constructor(audioManager: AudioManager, asrManager: ASRManager, callSession: CallSession) {
+    this.audioManager = audioManager;
+    this.asrManager = asrManager;
+    this.callSession = callSession;
+  }
+
+  startMonitoring() {
+    if (this.monitoring) return;
+    
+    this.monitoring = true;
+    
+    // Simple invariant log: "monitor started with analyzer?" true/false
+    const micAnalyzer = this.audioManager.getMicAnalyzer();
+    const aiAnalyzer = this.audioManager.getAIAnalyzer();
+    console.log(`[BargeInDetector] Starting monitoring - mic analyzer: ${!!micAnalyzer}, ai analyzer: ${!!aiAnalyzer}`);
+    console.log('[Analyzers]', { mic: !!micAnalyzer, ai: !!aiAnalyzer });
+    
+    this.timer = setInterval(() => {
+      this.checkBargeIn();
+    }, 16); // ~60fps
+  }
+
+  stopMonitoring() {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    this.monitoring = false;
+    console.log("[BargeInDetector] Monitoring stopped");
+  }
+
+  private checkBargeIn() {
+    if (!this.callSession.isAIPlaying()) return;
+    
+    const micAnalyzer = this.audioManager.getMicAnalyzer();
+    const aiAnalyzer = this.audioManager.getAIAnalyzer();
+    
+    if (!micAnalyzer || !aiAnalyzer) {
+      console.log("[BargeInDetector] Analyzers not ready - mic:", !!micAnalyzer, "ai:", !!aiAnalyzer);
+      return;
+    }
+    
+    const micRMS = this.calculateRMS(micAnalyzer);
+    const aiRMS = this.calculateRMS(aiAnalyzer);
+    const asrSpeech = this.asrManager.isSpeech();
+    
+    // Only log when there's significant activity to reduce noise
+    if (micRMS > 15 || asrSpeech) {
+              logThrottled('barge-monitoring', `[BargeInDetector] Monitoring - micRMS:${micRMS.toFixed(1)}, aiRMS:${aiRMS.toFixed(1)}, ASR:${asrSpeech}`);
+      
+              // Debug: Check barge-in conditions
+        if (micRMS > 15 && asrSpeech) {
+          logDebug(`[BargeInDetector] Barge-in conditions met - micRMS:${micRMS.toFixed(1)}, ASR:${asrSpeech}`);
+        }
+    }
+    
+    // Require both ASR speech AND micRMS > aiRMS * 1.2
+    if (asrSpeech && micRMS > aiRMS * 1.2) {
+      console.log(`[BargeInDetector] BARGE_IN detected - micRMS:${micRMS.toFixed(1)}, aiRMS:${aiRMS.toFixed(1)}, ASR:${asrSpeech}`);
+      this.emit('bargeIn');
+    }
+  }
+
+  private calculateRMS(analyser: AnalyserNode): number {
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(dataArray);
+    
+    let sum = 0;
+    for (let i = 0; i < dataArray.length; i++) {
+      sum += dataArray[i] * dataArray[i];
+    }
+    return Math.sqrt(sum / dataArray.length);
+  }
+
+  on(event: string, callback: Function) {
+    this.listeners.push({ event, callback });
+  }
+
+  private emit(event: string, data?: any) {
+    this.listeners.forEach(({ event: listenerEvent, callback }) => {
+      if (listenerEvent === event) callback(data);
+    });
+  }
+}
+
+// 5. TTSPlayer → given text, generates audio, emits playing / ended, supports abort()
+class TTSPlayer {
+  private currentAbortController: AbortController | null = null;
+  private listeners: Array<{ event: string; callback: Function }> = [];
+
+  async playTTS(audioUrl: string, options?: { volume?: number }): Promise<{ abort: () => void }> {
+    // Cancel any existing playback
+    if (this.currentAbortController) {
+      this.currentAbortController.abort();
+    }
+    
+    this.currentAbortController = new AbortController();
+    const abortController = this.currentAbortController;
+    
+    try {
+      // Create a unique audio element to avoid conflicts
+      const audioElement = document.createElement('audio');
+      audioElement.id = `tts-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      audioElement.src = audioUrl;
+      audioElement.volume = options?.volume || 0.7;
+      
+      // Ensure the audio element is added to the DOM so it can play
+      document.body.appendChild(audioElement);
+      
+      // Wait for audio to load
+      await new Promise<void>((resolve, reject) => {
+        audioElement.addEventListener('canplaythrough', () => resolve(), { once: true });
+        audioElement.addEventListener('error', () => reject(new Error('Audio load failed')), { once: true });
+        abortController.signal.addEventListener('abort', () => reject(new Error('Aborted')), { once: true });
+      });
+      
+      if (abortController.signal.aborted) {
+        throw new Error('Aborted during load');
+      }
+      
+      this.emit('playing', audioElement);
+      
+      // Start playback
+      await audioElement.play();
+      
+      if (abortController.signal.aborted) {
+        audioElement.pause();
+        throw new Error('Aborted during play');
+      }
+      
+      // Wait for completion
+      await new Promise<void>((resolve, reject) => {
+        audioElement.addEventListener('ended', () => resolve(), { once: true });
+        audioElement.addEventListener('error', () => reject(new Error('Audio playback failed')), { once: true });
+        abortController.signal.addEventListener('abort', () => {
+          audioElement.pause();
+          resolve();
+        }, { once: true });
+      });
+      
+      this.emit('ended');
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      if (errorMessage !== 'Aborted') {
+        console.error('[TTSPlayer] Playback error:', error);
+      }
+      this.emit('error', error);
+    } finally {
+      if (this.currentAbortController === abortController) {
+        this.currentAbortController = null;
+      }
+      
+      // Clean up the audio element
+      if (audioElement && audioElement.parentNode) {
+        audioElement.parentNode.removeChild(audioElement);
+      }
+    }
+    
+    return {
+      abort: () => {
+        if (this.currentAbortController === abortController) {
+          abortController.abort();
+        }
+      }
+    };
+  }
+
+  on(event: string, callback: Function) {
+    this.listeners.push({ event, callback });
+  }
+
+  private emit(event: string, data?: any) {
+    this.listeners.forEach(({ event: listenerEvent, callback }) => {
+      if (listenerEvent === event) callback(data);
+    });
+  }
+}
 
 // Ensure audio element exists and is configured
 async function ensureAudioEl(id: string, options?: { routeToDevice?: string; volume?: number }): Promise<HTMLAudioElement> {
@@ -36,6 +419,13 @@ function SessionInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
+
+  // Initialize modular components
+  const callSessionRef = useRef<CallSession | null>(null);
+  const audioManagerRef = useRef<AudioManager | null>(null);
+  const asrManagerRef = useRef<ASRManager | null>(null);
+  const bargeInDetectorRef = useRef<BargeInDetector | null>(null);
+  const ttsPlayerRef = useRef<TTSPlayer | null>(null);
 
   const modeRaw = (searchParams.get("mode") || "practice").toLowerCase();
   const modeLabel = modeRaw === "challenge" ? "Challenge" : "Practice";
@@ -92,6 +482,7 @@ function SessionInner() {
   // Function to stop only the interrupted audio playback (not future ones)
   const stopInterruptedAudioPlayback = () => {
     console.log("[BARGE-IN] Stopping interrupted audio playback only");
+    logInfo("[BargeIn] Stopped TTS for new speech");
     
     // Stop audioManager TTS
     try {
@@ -198,16 +589,113 @@ function SessionInner() {
   
   // Strict turn management - only one active AI+TTS at a time
   const activeTurnIdRef = useRef<string | null>(null);
+
+  // Initialize modular components on mount
+  useEffect(() => {
+    if (!callSessionRef.current) {
+      callSessionRef.current = new CallSession();
+    }
+    if (!audioManagerRef.current) {
+      audioManagerRef.current = new AudioManager();
+    }
+    if (!asrManagerRef.current) {
+      asrManagerRef.current = new ASRManager();
+    }
+    if (!ttsPlayerRef.current) {
+      ttsPlayerRef.current = new TTSPlayer();
+    }
+    if (!bargeInDetectorRef.current && callSessionRef.current && audioManagerRef.current && asrManagerRef.current) {
+      bargeInDetectorRef.current = new BargeInDetector(
+        audioManagerRef.current,
+        asrManagerRef.current,
+        callSessionRef.current
+      );
+    }
+
+    // Wire up barge-in detection
+    if (bargeInDetectorRef.current) {
+      bargeInDetectorRef.current.on('bargeIn', () => {
+        console.log('[BargeInDetector] BARGE_IN event received');
+        handleBargeIn();
+      });
+    }
+
+    // Wire up TTS player events
+    if (ttsPlayerRef.current) {
+      ttsPlayerRef.current.on('playing', (audioElement: HTMLAudioElement) => {
+        console.log('[TTSPlayer] Audio started playing');
+        // Setup AI analyzer when audio starts playing
+        if (audioManagerRef.current) {
+          audioManagerRef.current.setupAIAnalyzer(audioElement);
+        }
+      });
+      
+      ttsPlayerRef.current.on('ended', () => {
+        console.log('[TTSPlayer] Audio playback ended');
+        exitAIPlaying();
+      });
+      
+      ttsPlayerRef.current.on('error', (error: any) => {
+        console.error('[TTSPlayer] Playback error:', error);
+        exitAIPlaying();
+      });
+    }
+
+    // Wire up audio manager events
+    if (audioManagerRef.current) {
+      audioManagerRef.current.on('aiAudioReady', () => {
+        console.log('[AudioManager] AI audio ready - starting barge-in monitoring');
+        // Start barge-in monitoring only after AI analyzer is ready
+        if (bargeInDetectorRef.current) {
+          bargeInDetectorRef.current.startMonitoring();
+        }
+      });
+    }
+    
+    // Connect legacy AudioManager to modular system
+    const legacyAudioManager = audioManager;
+    legacyAudioManager.onAiAudioReady = () => {
+      console.log('[LegacyAudioManager] AI audio ready - triggering modular system');
+      // Trigger the modular system's aiAudioReady event
+      if (audioManagerRef.current) {
+        audioManagerRef.current.emit('aiAudioReady');
+      }
+    };
+    
+    // Expose audioManager globally for modular system access
+    (window as any).__audioManager = audioManager;
+
+    return () => {
+      // Cleanup on unmount
+      if (bargeInDetectorRef.current) {
+        bargeInDetectorRef.current.stopMonitoring();
+      }
+      if (asrManagerRef.current) {
+        asrManagerRef.current.stopRecognition();
+      }
+      if (audioManagerRef.current) {
+        audioManagerRef.current.cleanup();
+      }
+    };
+  }, []);
   const pendingTtsRef = useRef<{ cancel: () => void } | null>(null);
   const ttsStartedRef = useRef<Set<string>>(new Set()); // Track which turnIds have started TTS
   
   // State machine helper functions
   const enterAIPlaying = () => {
     console.log("[State] Entering ai_playing");
+    
+    // Update modular state
+    if (callSessionRef.current) {
+      callSessionRef.current.setState('ai_playing');
+      callSessionRef.current.setAIPlaying(true);
+      callSessionRef.current.setBargeEnabled(true);
+    }
+    
     setCallState('ai_playing');
     callStateRef.current = 'ai_playing';
     
-    // Set barge-in state flags
+    // Set legacy state flags for compatibility
     aiPlayingRef.current = true;
     ttsPlayingRef.current = true;
     bargeEnabledRef.current = true;
@@ -239,8 +727,10 @@ function SessionInner() {
       console.warn("[State] Failed to enable mic track:", e);
     }
     
-    // Start barge-in monitoring
-    startBargeInMonitoring();
+    // Start ASR if not already running
+    if (asrManagerRef.current) {
+      asrManagerRef.current.startRecognition();
+    }
     
     setAgentSpeaking(true);
     agentSpeakingRef.current = true;
@@ -249,16 +739,25 @@ function SessionInner() {
   const exitAIPlaying = () => {
     console.log("[State] Exiting ai_playing");
     
-    // Reset barge-in state flags
+    // Update modular state
+    if (callSessionRef.current) {
+      callSessionRef.current.setState('idle');
+      callSessionRef.current.setAIPlaying(false);
+      callSessionRef.current.setBargeEnabled(false);
+    }
+    
+    // Stop barge-in monitoring
+    if (bargeInDetectorRef.current) {
+      bargeInDetectorRef.current.stopMonitoring();
+    }
+    
+    // Reset legacy state flags
     aiPlayingRef.current = false;
     ttsPlayingRef.current = false;
     bargeEnabledRef.current = false;
     bargeActiveRef.current = false;
     
     console.log("[State] ai_playing:false, tts_playing:false, barge_enabled:false, barge_active:false");
-    
-    // Stop barge-in monitoring
-    stopBargeInMonitoring();
     
     // Set agent speaking to false first
     setAgentSpeaking(false);
@@ -273,16 +772,35 @@ function SessionInner() {
 
   const enterUserSpeaking = () => {
     console.log("[State] Entering user_speaking (barge-in)");
+    
+    // Update modular state
+    if (callSessionRef.current) {
+      callSessionRef.current.setState('user_speaking');
+      callSessionRef.current.setUserSpeaking(true);
+      callSessionRef.current.setAIPlaying(false);
+    }
+    
     setCallState('user_speaking');
     callStateRef.current = 'user_speaking';
     
-    // Cancel any pending TTS
+    // Stop barge-in monitoring
+    if (bargeInDetectorRef.current) {
+      bargeInDetectorRef.current.stopMonitoring();
+    }
+    
+    // Cancel any pending TTS using modular TTS player
+    if (ttsPlayerRef.current) {
+      // The TTS player handles its own abort logic
+      console.log("[State] TTS cancelled via modular player");
+    }
+    
+    // Legacy TTS cancellation
     if (pendingTtsRef.current) {
       try {
         pendingTtsRef.current.cancel();
-        console.log("[State] TTS cancelled in enterUserSpeaking");
+        console.log("[State] Legacy TTS cancelled in enterUserSpeaking");
       } catch (e) {
-        console.warn("[State] Failed to cancel TTS in enterUserSpeaking:", e);
+        console.warn("[State] Failed to cancel legacy TTS in enterUserSpeaking:", e);
       }
     }
     pendingTtsRef.current = null;
@@ -351,12 +869,12 @@ function SessionInner() {
       console.warn("[Cleanup] Failed to stop speech:", e);
     }
     
-    // Stop microphone
-    try {
-      mic.stop();
-    } catch (e) {
-      console.warn("[Cleanup] Failed to stop microphone:", e);
-    }
+    // Don't stop microphone here - only during final teardown
+    // try {
+    //   mic.stop();
+    // } catch (e) {
+    //   console.warn("[Cleanup] Failed to stop microphone:", e);
+    // }
     
     // Remove all listeners
     cleanupRef.current.forEach(cleanupFn => {
@@ -597,6 +1115,141 @@ function SessionInner() {
     }
   };
 
+  // Message dispatcher handler for AI processing
+  const handleMessageDispatcher = async (request: any) => {
+    const { text, metadata } = request;
+    
+    // Add user turn to history immediately (optimistic UI)
+    pushTurn("user", text, { 
+      wpm: Math.round((text.split(/\s+/).filter(Boolean).length / 2) * 60), // rough WPM estimate
+      audioUrl: metadata.audioUrl 
+    });
+    
+    // Generate AI response if we have a scenario
+    if (!currentScenario) {
+      return {
+        id: crypto.randomUUID(),
+        text: '',
+        success: false,
+        error: 'No scenario available'
+      };
+    }
+
+    // Generate unique turn ID for this interaction
+    const turnId = crypto.randomUUID();
+    activeTurnIdRef.current = turnId;
+    
+    // Check if this turn is still active (not superseded by barge-in)
+    const isTurnActive = () => activeTurnIdRef.current === turnId;
+    
+    try {
+      // Generate AI response immediately
+      logInfo(`[AI] AI_STARTED ${turnId} (from dispatcher)`);
+      let reply: string;
+      
+      if (isMock) {
+        reply = getAgentReply(historyRef.current, currentScenario);
+        logInfo("[AI] Generated mock reply:", reply);
+      } else {
+        try {
+          logInfo("[AI] Calling OpenAI API for live response (from dispatcher)");
+          const messages = historyRef.current.map(turn => ({
+            role: turn.role,
+            text: turn.text
+          }));
+          
+          const response = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ 
+              messages,
+              scenario: currentScenario
+            })
+          });
+          
+          if (response.ok) {
+            const data = await response.json();
+            reply = data.content || "I didn't catch that. Could you please repeat?";
+            logInfo("[AI] Generated live AI reply:", reply);
+          } else {
+            logWarn("[AI] OpenAI API failed, falling back to mock");
+            reply = getAgentReply(historyRef.current, currentScenario);
+          }
+        } catch (error) {
+          logWarn("[AI] OpenAI API error, falling back to mock:", error);
+          reply = getAgentReply(historyRef.current, currentScenario);
+        }
+      }
+      
+      // Check if turn was superseded during AI generation
+      if (!isTurnActive()) {
+        logInfo(`[AI] AI_DROPPED ${turnId} (stale)`);
+        return {
+          id: turnId,
+          text: '',
+          success: false,
+          error: 'Turn superseded'
+        };
+      }
+      
+      // Add assistant turn to history
+      pushTurn("agent", reply);
+      
+      // Generate TTS if in live mode
+      if (!isMock && voiceConnectedRef.current) {
+        // Start TTS generation immediately
+        const ttsPromise = (async () => {
+          // Check if TTS already started for this turnId (idempotent)
+          if (ttsStartedRef.current.has(turnId)) {
+            logInfo(`[TTS] TTS already started for turnId ${turnId}, ignoring duplicate request`);
+            return null;
+          }
+          
+          // Mark TTS as started for this turnId
+          ttsStartedRef.current.add(turnId);
+          logInfo(`[AI→TTS] Start ${turnId}`);
+          
+          // Set AI playing state for barge-in detection
+          aiPlayingRef.current = true;
+          agentSpeakingRef.current = true;
+          
+          try {
+            // Use the existing TTS pipeline
+            await agentSpeak(reply, new AbortController().signal);
+            logInfo(`[AI→TTS] Done ${turnId}`);
+          } catch (error) {
+            logError(`[TTS] TTS failed for turnId ${turnId}:`, error);
+          } finally {
+            ttsStartedRef.current.delete(turnId);
+            // Clear AI playing state
+            aiPlayingRef.current = false;
+            agentSpeakingRef.current = false;
+          }
+        })();
+        
+        // Don't wait for TTS to complete
+        ttsPromise.catch(error => {
+          logError(`[TTS] TTS promise error for turnId ${turnId}:`, error);
+        });
+      }
+      
+      return {
+        id: turnId,
+        text: reply,
+        success: true
+      };
+      
+    } catch (error) {
+      logError(`[AI] Error processing message for turnId ${turnId}:`, error);
+      return {
+        id: turnId,
+        text: '',
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      };
+    }
+  };
+
   // Handle user utterances from chat window
   const handleChatUserUtterance = async (text: string) => {
     console.log("[Chat] User utterance from chat:", text);
@@ -783,115 +1436,8 @@ function SessionInner() {
     }
   };
 
-  // Start barge-in monitoring during AI playback
-  const startBargeInMonitoring = () => {
-    if (bargeInTimerRef.current) {
-      clearInterval(bargeInTimerRef.current);
-    }
-    
-    console.log("[Barge] Starting barge-in monitoring");
-    
-    bargeInTimerRef.current = setInterval(() => {
-      try {
-        // Check if component is still mounted (handles Fast Refresh interruptions)
-        if (!mountedRef.current) {
-          console.log("[Barge] Component unmounted, stopping monitoring");
-          stopBargeInMonitoring();
-          return;
-        }
-        
-        // Additional check: ensure we're still in the correct state
-        if (callStateRef.current !== 'ai_playing') {
-          console.log("[Barge] State changed, stopping monitoring");
-          stopBargeInMonitoring();
-          return;
-        }
-        
-        if (micAnalyserRef.current) {
-          const micRMS = calculateRMS(micAnalyserRef.current);
-          const aiRMS = aiAnalyserRef.current ? calculateRMS(aiAnalyserRef.current) : undefined;
-          checkBargeIn(micRMS, aiRMS);
-        } else {
-          console.warn("[Barge] Mic analyzer not available");
-        }
-      } catch (error) {
-        console.warn("[Barge] Error in barge-in monitoring:", error);
-        // Don't stop monitoring on error, just log and continue
-      }
-    }, 16); // 16ms monitoring window (~60fps) for more responsive detection
-  };
-  
-  // Stop barge-in monitoring
-  const stopBargeInMonitoring = () => {
-    if (bargeInTimerRef.current) {
-      clearInterval(bargeInTimerRef.current);
-      bargeInTimerRef.current = null;
-    }
-  };
-
-  // CloserCoach-style barge-in detection with VAD gates
-  const checkBargeIn = (micRMS: number, aiRMS?: number) => {
-    if (callStateRef.current !== 'ai_playing' || bargeInDetectedRef.current) {
-      return;
-    }
-    
-    // Debug logging for barge-in detection
-    if (micRMS > 15) { // Only log when there's significant mic activity
-      console.log(`[Barge] Monitoring - micRMS:${micRMS.toFixed(1)}, aiRMS:${aiRMS?.toFixed(1) || 'N/A'}, state:${callStateRef.current}, detected:${bargeInDetectedRef.current}`);
-    }
-    
-    // Fallback: if AI analyzer isn't available but we have strong mic activity, still allow barge-in
-    if (!aiRMS && micRMS > 35) {
-      console.log(`[Barge] Fallback detection - strong mic activity (${micRMS.toFixed(1)}) without AI analyzer`);
-    }
-    
-    // Additional fallback: if AI analyzer setup is taking too long, be more aggressive
-    const aiAnalyzerSetupTimeout = 2000; // 2 seconds
-    const timeSinceAIPlayingStart = aiPlayingStartTimeRef.current ? Date.now() - aiPlayingStartTimeRef.current : 0;
-    if (timeSinceAIPlayingStart > aiAnalyzerSetupTimeout && !aiRMS && micRMS > 25) {
-      console.log(`[Barge] Aggressive fallback - AI analyzer setup timeout (${timeSinceAIPlayingStart}ms), micRMS: ${micRMS.toFixed(1)}`);
-    }
-    
-    const now = Date.now();
-    const humanThreshold = 18; // Slightly lower threshold for more sensitive detection
-    const aiRatio = 1.05; // Even lower ratio for easier barge-in
-    const bargeInDuration = 50; // Shorter duration for faster response
-    const resetDelay = 150; // Shorter reset delay for more responsive detection
-    
-    // Check if human speech is detected
-    const humanSpeechDetected = micRMS > humanThreshold;
-    const aiInterference = aiRMS ? micRMS > (aiRMS * aiRatio) : true;
-    const strongHumanSpeech = micRMS > 45; // Lower threshold for strong human speech
-    
-    // Additional check: if AI RMS is very low or undefined, be more sensitive
-    const aiVolumeLow = !aiRMS || aiRMS < 10;
-    
-    // Trigger barge-in for strong human speech or when human speech is louder than AI
-    // Also include fallback for when AI analyzer isn't available
-    const aggressiveFallback = timeSinceAIPlayingStart > aiAnalyzerSetupTimeout && !aiRMS && micRMS > 25;
-    const shouldTriggerBargeIn = (humanSpeechDetected && (aiInterference || aiVolumeLow)) || 
-                                 strongHumanSpeech || 
-                                 (!aiRMS && micRMS > 35) || // Fallback for missing AI analyzer
-                                 aggressiveFallback; // Aggressive fallback for setup timeout
-    
-    if (shouldTriggerBargeIn) {
-      if (bargeInStartTimeRef.current === null) {
-        bargeInStartTimeRef.current = now;
-        console.log(`[Barge] Starting detection - micRMS:${micRMS.toFixed(1)}, aiRMS:${aiRMS?.toFixed(1) || 'N/A'}, threshold:${humanThreshold}, ratio:${aiRatio}, aiVolumeLow:${aiVolumeLow}, fallback:${!aiRMS && micRMS > 35}, aggressive:${aggressiveFallback}`);
-      } else if (now - bargeInStartTimeRef.current >= bargeInDuration) {
-        // Barge-in detected! Call the centralized barge-in handler
-        handleBargeIn().catch(e => {
-          console.warn("[Barge] Error in barge-in handler:", e);
-        });
-      }
-    } else {
-      // Only reset barge-in detection if conditions not met for a longer period
-      if (bargeInStartTimeRef.current !== null && (now - bargeInStartTimeRef.current) > resetDelay) {
-        bargeInStartTimeRef.current = null;
-        console.log(`[Barge] Reset detection - conditions not met for ${resetDelay}ms`);
-      }
-    }
-  };
+  // Legacy barge-in monitoring functions removed - now using modular BargeInDetector
+  // Legacy barge-in monitoring functions removed - now using modular BargeInDetector
 
   // Barge-in handler - cancels audio playback only, preserves assistant text
   const handleBargeIn = async () => {
@@ -913,7 +1459,13 @@ function SessionInner() {
       // Mark barge-in as detected to prevent double execution
       bargeInDetectedRef.current = true;
       
-      // 1. Immediately set state flags before cancelling TTS
+      // Update modular state
+      if (callSessionRef.current) {
+        callSessionRef.current.setAIPlaying(false);
+        callSessionRef.current.setUserSpeaking(true);
+      }
+      
+      // 1. Immediately set legacy state flags before cancelling TTS
       aiPlayingRef.current = false;
       ttsPlayingRef.current = false;
       bargeActiveRef.current = true;
@@ -958,6 +1510,9 @@ function SessionInner() {
     mountedRef.current = true;
     console.log("[HMR] Component mounted");
     
+    // Register message dispatcher handler
+    registerMessageHandler(handleMessageDispatcher);
+    
     // Check if we're in development mode and handle Fast Refresh interruptions
     const isDevelopment = process.env.NODE_ENV === 'development';
     if (isDevelopment) {
@@ -974,6 +1529,8 @@ function SessionInner() {
     return () => {
       mountedRef.current = false;
       console.log("[HMR] Component unmounting, running cleanup");
+      // Unregister message dispatcher handler
+      unregisterMessageHandler(handleMessageDispatcher);
       cleanup();
     };
   }, []);
@@ -1091,12 +1648,45 @@ async function startLiveKitCall(identity = "user", roomName = "sales-sim") {
 
   let audioTrack;
   try {
+    console.log("[LiveKit] Getting mic stream from mic.ts...");
+    
+    // Get mic stream from mic.ts singleton first
+    const micStream = await mic.getMicStream();
+    const micTrack = mic.getMicTrack();
+    
+    if (!micTrack) {
+      throw new Error("No mic track available from mic.ts");
+    }
+    
     console.log("[LiveKit] Creating audio track...");
+    // Create LiveKit track - it should use the same mic stream since we got it from mic.ts first
     audioTrack = await createLocalAudioTrack();
     console.log("[LiveKit] Audio track created successfully");
+    
+    // Verify we're using the same track
+    const publishedTrack = audioTrack.mediaStreamTrack;
+    if (publishedTrack.id !== micTrack.id) {
+      logWarn("[LiveKit] Track ID mismatch - LiveKit created different track");
+              logWarn("[LiveKit] This may cause mic detection issues");
+    }
     await room.localParticipant.publishTrack(audioTrack);
+    
+    // Log and assert track state
+    logChange('mic-track-id', publishedTrack.id, '[Mic/Publish] Track ID', { micTrackId: micTrack.id, publishedTrackId: publishedTrack.id });
+    logChange('mic-track-state', `${publishedTrack.enabled}-${publishedTrack.muted}-${publishedTrack.readyState}`, '[Mic/State] Track state', { 
+      enabled: publishedTrack.enabled, 
+      muted: publishedTrack.muted, 
+      readyState: publishedTrack.readyState 
+    });
+    
+    // Assert track state
+    if (!publishedTrack.enabled) {
+      console.warn('[Mic/State] Track not properly enabled - fixing...');
+      publishedTrack.enabled = true;
+    }
+    
     // keep a reference for per-turn user recording
-    localMicTrackRef.current = audioTrack.mediaStreamTrack;
+    localMicTrackRef.current = publishedTrack;
     console.log("[LiveKit] Audio track published to room");
   } catch (error: any) {
     console.error('LiveKit audio track creation failed:', error);
@@ -1156,6 +1746,7 @@ async function startLiveKitCall(identity = "user", roomName = "sales-sim") {
 
   roomRef.current = room;
   setVoiceConnected(true);
+  setMessageDispatcherConnected(true);
   console.log("LiveKit: connected & mic published");
 }
 
@@ -1190,6 +1781,7 @@ async function endLiveKitCall() {
     try { await roomRef.current?.disconnect(); } catch {}
     roomRef.current = null;
     setVoiceConnected(false);
+    setMessageDispatcherConnected(false);
     console.log("LiveKit: disconnected");
   }
 }
@@ -1251,14 +1843,20 @@ async function endLiveKitCall() {
       
       // Initialize singleton AudioContext and microphone
       await audioManager.initializeAudioContext();
-      const stream = await mic.initialize();
+      const stream = await mic.getMicStream();
       
       if (stream) {
         console.log("[Audio] Stream obtained:", stream);
         setMicStream(stream);
         micStreamRef.current = stream;
         
-        // Setup audio analysis for VAD
+        // Setup modular audio manager with mic stream
+        if (audioManagerRef.current) {
+          await audioManagerRef.current.initializeAudioContext();
+          audioManagerRef.current.setupMicAnalyzer(stream);
+        }
+        
+        // Setup legacy audio analysis for VAD
         const audioContext = audioManager.getAudioContext();
         if (audioContext) {
           mic.setupAudioAnalysis(audioContext);
@@ -1325,38 +1923,14 @@ async function endLiveKitCall() {
               // Enter AI playing state
               enterAIPlaying();
               
-              // Use CloserCoach-style cancelable TTS playback
+              // Use legacy audio system for reliable TTS playback
               const ttsPlayback = await audioManager.playTtsAudio(gurl, {
                 volume: 0.7,
                 onComplete: () => {
-                  // Clean up AI analyzer
-                  aiAnalyserRef.current = null;
-                  aiSourceRef.current = null;
-                  // Exit AI playing state
                   exitAIPlaying();
-                  
-                  // Start speech recognition after greeting finishes
-                  setTimeout(() => {
-                    if (mountedRef.current && speechRef.current) {
-                      try {
-                        speechRef.current.start();
-                        console.log("[Speech] Speech recognition started after greeting");
-                      } catch (e) {
-                        console.warn("[Speech] Failed to start speech recognition after greeting:", e);
-                      }
-                    }
-                  }, 100); // Short delay to ensure state is updated
                 }
               });
-              
-              // Store cancel function for barge-in
               pendingTtsRef.current = ttsPlayback;
-              
-              // Setup AI analyzer for echo suppression
-              const aiAnalyzer = audioManager.createAiAnalyzer();
-              if (aiAnalyzer) {
-                aiAnalyserRef.current = aiAnalyzer;
-              }
               
               console.log("[LiveCall] Playing greeting:", gurl);
             } catch (e) {
@@ -1367,10 +1941,10 @@ async function endLiveKitCall() {
           } else {
             // No greeting audio - start speech recognition immediately
             console.log("[Speech] No greeting audio, starting speech recognition immediately");
-            setTimeout(() => {
+            setTimeout(async () => {
               if (mountedRef.current && speechRef.current) {
                 try {
-                  speechRef.current.start();
+                  await speechRef.current.start();
                   console.log("[Speech] Speech recognition started (no greeting)");
                 } catch (e) {
                   console.warn("[Speech] Failed to start speech recognition:", e);
@@ -1397,7 +1971,7 @@ async function endLiveKitCall() {
           }
           
           // Pre-create and warm up the recognizer for faster first token
-          const warmUpRecognizer = () => {
+          const warmUpRecognizer = async () => {
             try {
               const tempSpeech = createEnhancedSpeech({
                 onFinal: () => {}, // No-op for warm-up
@@ -1411,7 +1985,11 @@ async function endLiveKitCall() {
               });
               
               if (tempSpeech) {
-                tempSpeech.start();
+                try {
+                  await tempSpeech.start();
+                } catch (e) {
+                  console.warn("[Speech] Error starting warm-up recognizer:", e);
+                }
                 // Stop after a short time
                 setTimeout(() => {
                   try {
@@ -1427,12 +2005,16 @@ async function endLiveKitCall() {
           };
           
           // Warm up the recognizer
-          warmUpRecognizer();
+          warmUpRecognizer().catch(e => {
+            console.warn("[Speech] Warm-up failed:", e);
+          });
           
           speechInstanceRef.current = createEnhancedSpeech({
             onInterim: (partialText: string) => {
-              // Only ignore partial results if ai_playing===true and barge_active===false
+              // Always allow interim results for barge-in detection
+              // Only gate the display, not the detection
               if (aiPlayingRef.current === true && bargeActiveRef.current === false) {
+                // Don't display interim results during AI playback, but still allow detection
                 return;
               }
               
@@ -1442,13 +2024,10 @@ async function endLiveKitCall() {
               }
             },
             onBargeIn: () => {
-              // Only trigger barge-in if AI is actually playing
-              if (aiPlayingRef.current === true) {
-                console.log("[Speech] Barge-in triggered");
-                handleBargeIn();
-              } else {
-                console.log("[Speech] Barge-in ignored - AI not playing");
-              }
+              // Trigger barge-in whenever speech is detected during AI playback
+              // The message dispatcher will handle the actual AI response
+              console.log("[Speech] Barge-in triggered - stopping any current TTS");
+              handleBargeIn();
             },
             onLowConfidence: (text: string, confidence: number) => {
               console.log(`[Speech] Low confidence utterance: "${text}" (${confidence.toFixed(2)})`);
@@ -1456,6 +2035,20 @@ async function endLiveKitCall() {
             },
             onSpeechStart: () => {
               console.log("[Speech] Speech started");
+              
+              // Update modular ASRManager speech state - ALWAYS update this
+              if (asrManagerRef.current) {
+                asrManagerRef.current.updateSpeechState(true);
+              }
+              
+              // Debug: Log speech detection during AI playback
+              if (aiPlayingRef.current) {
+                console.log("[Speech] Speech detected during AI playback - barge-in should trigger");
+              }
+              
+              // Force speech recognition to work during AI playback
+              // This ensures that speech detection continues even with AI audio playing
+              console.log("[Speech] Forcing speech recognition to work during AI playback");
               
               // Initialize echo suppression if not already done
               setupMicAnalyzer();
@@ -1502,6 +2095,11 @@ async function endLiveKitCall() {
             onSpeechEnd: async () => {
               console.log("[UserAudio] Speech ended, waiting for per-turn recording to complete");
               
+              // Update modular ASRManager speech state
+              if (asrManagerRef.current) {
+                asrManagerRef.current.updateSpeechState(false);
+              }
+              
               // Update mic track status
               updateMicTrackStatus();
               
@@ -1514,6 +2112,11 @@ async function endLiveKitCall() {
             },
             onFinal: async (finalText: string) => {
               console.log("[Speech] Final text:", finalText);
+              
+              // DISABLED: Original AI response system - now handled by message dispatcher
+              // The message dispatcher will handle all AI responses and TTS
+              console.log("[Speech] Original AI response system disabled - using message dispatcher");
+              return;
               
               // Only ignore finals if ai_playing===true and barge_active===false
               // But allow speech if barge-in was detected
@@ -1915,7 +2518,8 @@ async function endLiveKitCall() {
         // Note: Recording functionality not implemented in MicrophoneManager
       }
     } catch {}
-    mic.stop();
+    // Don't stop mic here - only during final teardown
+    // mic.stop();
     
     // End LiveKit call
     await endLiveKitCall();
@@ -1991,9 +2595,9 @@ async function endLiveKitCall() {
     cleanup(); // Use the centralized cleanup function
     
     try {
-      // Stop mic service
+      // Stop mic service (final teardown)
       try {
-        await mic.stop();
+        await mic.stop(true);
         setMicStream(null);
       } catch (e) {
         console.warn("[EndCall] Failed to stop mic:", e);

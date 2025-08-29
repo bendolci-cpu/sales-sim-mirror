@@ -1,0 +1,41 @@
+{
+  "id": "ac834aa3-14a0-4cdd-8671-72377689ba4a",
+  "createdAt": 1756488912422,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is OR Nurse Educator + Biomed. OR is concerned about corrosion/staining on surgical tables and monitors.",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "would you lose what do you use for that computer",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "For cleaning monitors, we recommend using AF3, as it’s compatible and safe for screens. Bleach should be avoided to prevent corrosion.",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "screen",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "For screens, AF3 is the best choice to avoid damage and staining.",
+      "url": null
+    },
+    {
+      "role": "user",
+      "text": "hey can you hear me",
+      "url": null
+    },
+    {
+      "role": "agent",
+      "text": "Yes, I can hear you! What’s your question?",
+      "url": null
+    }
+  ]
+}
