@@ -293,9 +293,9 @@ function SessionInner() {
           <div className="mb-8 flex items-center justify-between">
             <div>
               <h1 className="text-2xl font-bold text-gray-900">Sales Simulation</h1>
-              <p className="text-gray-600">
-                {scenario.name} • {mode} • {isMock ? "Mock" : "Live"} • {voiceConnected ? "Connected" : "Disconnected"}
-              </p>
+                          <p className="text-gray-600">
+              {scenario.title} • {mode} • {isMock ? "Mock" : "Live"} • {voiceConnected ? "Connected" : "Disconnected"}
+            </p>
             </div>
             
             <div className="flex items-center gap-4">
@@ -309,7 +309,6 @@ function SessionInner() {
                   setIsToggling(true);
                   
                   const newMockValue = !isMock;
-                  setIsMock(newMockValue);
                   
                   // Update URL to persist the change
                   const params = new URLSearchParams(searchParams.toString());
@@ -335,7 +334,7 @@ function SessionInner() {
           
           {/* Scenario Picker */}
           <div className="mb-6">
-            <ScenarioPicker />
+            <ScenarioPicker onChange={() => {}} />
           </div>
 
           <div className="flex flex-col gap-6">
@@ -366,7 +365,7 @@ function SessionInner() {
             )}
 
             {/* Pipeline Status */}
-            {voiceConnected && (
+            {voiceConnected && unifiedPipeline.current && (
               <div className="rounded-lg border border-green-200 bg-green-50 p-4">
                 <h3 className="text-sm font-medium text-green-900 mb-2">Pipeline Status</h3>
                 <div className="text-sm text-green-800 space-y-1">
