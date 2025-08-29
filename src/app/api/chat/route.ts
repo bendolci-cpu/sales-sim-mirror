@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: openaiMessages,
-      max_tokens: 100,
+      max_tokens: 60, // Shorter responses for speed
       temperature: 0.7,
       stream: false,
     });

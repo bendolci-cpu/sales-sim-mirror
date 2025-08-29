@@ -698,19 +698,29 @@ async function endLiveKitCall() {
                     const useTtsStub = isMock || !voiceConnectedRef.current;
                     let aurl: string | null = null;
                     
-                    // Always try to get TTS audio for the AI response
-                    try {
-                      const r = await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: reply }) });
-                      if (r.ok) { 
-                        const j = await r.json(); 
-                        aurl = j?.url ?? null;
-                        console.log("[TTS] Generated audio for AI response:", aurl);
-                      } else {
-                        console.warn("[TTS] Failed to generate audio, status:", r.status);
+                    // Start TTS generation immediately for faster response
+                    const ttsPromise = (async () => {
+                      try {
+                        const r = await fetch("/api/tts-fast", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: reply }) });
+                        if (r.ok) { 
+                          const j = await r.json(); 
+                          console.log("[TTS] Generated fast audio for AI response:", j.url, "size:", j?.size);
+                          return j.url;
+                        } else {
+                          console.warn("[TTS] Fast TTS failed, trying fallback...");
+                          // Fallback to regular TTS
+                          const fallbackR = await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: reply }) });
+                          if (fallbackR.ok) {
+                            const j = await fallbackR.json();
+                            console.log("[TTS] Generated fallback audio:", j.url);
+                            return j.url;
+                          }
+                        }
+                      } catch (e) {
+                        console.warn("[TTS] Error generating audio:", e);
                       }
-                    } catch (e) {
-                      console.warn("[TTS] Error generating audio:", e);
-                    }
+                      return null;
+                    })();
                     
                     // Stop agent recorder and prefer per-turn object URL over stub
                     // Stop agent recorder; use its blob only if TTS failed
@@ -721,6 +731,9 @@ async function endLiveKitCall() {
                     } catch {}
                     agentRecRef.current = null;
                     agentRecDoneRef.current = null;
+                    
+                    // Wait for TTS to complete
+                    aurl = await ttsPromise;
                     
                     if (aurl) {
                       pushTurn("agent", reply, { audioUrl: useTtsStub ? aurl : undefined });
