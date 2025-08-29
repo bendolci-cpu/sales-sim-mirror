@@ -18,6 +18,20 @@ import { getUnifiedAudioPipeline, cleanupUnifiedAudioPipeline } from "@/lib/unif
 import { Room, createLocalAudioTrack } from "livekit-client";
 import type { MessageRequest, MessageResponse } from "@/lib/messageDispatcher";
 
+// Helper function to connect LiveKit with existing mic track
+async function connectToLiveKitWithMicTrack(room: Room, micTrack: MediaStreamTrack): Promise<any> {
+  try {
+    // Publish the existing mic track directly to LiveKit
+    const publication = await room.localParticipant.publishTrack(micTrack);
+    
+    logInfo(`[LiveKit] Published mic track: ${micTrack.id}`);
+    return publication;
+  } catch (error) {
+    logError("[LiveKit] Failed to publish mic track:", error);
+    throw error;
+  }
+}
+
 interface Turn {
   id: string;
   role: "user" | "agent";
@@ -236,7 +250,9 @@ function SessionInner() {
   };
   
   const connectToLiveKit = async () => {
-    if (!micTrack) {
+    // Get the mic track from the unified pipeline
+    const pipelineMicTrack = unifiedPipeline.current?.getMicTrack();
+    if (!pipelineMicTrack) {
       logError("[Session] No mic track available for LiveKit");
       return;
     }
@@ -251,26 +267,15 @@ function SessionInner() {
       
       await livekitRoom.current.connect(roomUrl, token);
       
-      // Use the mic track from the unified pipeline for logging
-      const pipelineMicTrack = unifiedPipeline.current?.getMicTrack();
-      if (pipelineMicTrack) {
-        logInfo(`[Session] LIVEKIT_PUBLISH micTrack:${pipelineMicTrack.id}`);
-      }
+      // Use the helper function to publish the pipeline's mic track
+      const publication = await connectToLiveKitWithMicTrack(livekitRoom.current, pipelineMicTrack);
       
-      // Create local audio track (LiveKit will handle the mic access)
-      const localTrack = await createLocalAudioTrack();
-      
-      // Publish the track
-      await livekitRoom.current.localParticipant.publishTrack(localTrack);
-      
-      if (localTrack.sid) {
-        setPublishedTrackId(localTrack.sid);
-        logInfo(`[Session] Published track: ${localTrack.sid}`);
+      if (publication?.trackSid) {
+        setPublishedTrackId(publication.trackSid);
+        logInfo(`[Session] Published track: ${publication.trackSid}`);
         
-        // Log track IDs for debugging
-        if (pipelineMicTrack) {
-          logInfo(`[Mic/Publish] ids {micTrackId: ${pipelineMicTrack.id}, publishedTrackId: ${localTrack.sid}, equal: ${pipelineMicTrack.id === localTrack.sid}}`);
-        }
+        // Log track IDs for debugging - should be equal since we're using the same track
+        logInfo(`[Mic/Publish] ids {micTrackId: ${pipelineMicTrack.id}, publishedTrackId: ${publication.trackSid}, equal: ${pipelineMicTrack.id === publication.trackSid}}`);
       }
       
       logInfo("[Session] Connected to LiveKit room");
