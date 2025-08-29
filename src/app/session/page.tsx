@@ -261,11 +261,24 @@ function SessionInner() {
       // Create LiveKit room
       livekitRoom.current = new Room();
       
-      // Connect to room (you'll need to configure the room URL)
-      const roomUrl = process.env.NEXT_PUBLIC_LIVEKIT_URL || 'wss://your-livekit-server.com';
-      const token = 'your-token'; // You'll need to implement token generation
+      // Fetch LiveKit token from our API
+      const tokenResponse = await fetch('/api/livekit-token?room=sales-sim&identity=test-user');
+      if (!tokenResponse.ok) {
+        throw new Error(`Failed to get LiveKit token: ${tokenResponse.status}`);
+      }
       
-      await livekitRoom.current.connect(roomUrl, token);
+      const tokenData = await tokenResponse.json();
+      if (!tokenData.token) {
+        throw new Error('No token received from LiveKit token API');
+      }
+      
+      // Connect to room with proper token
+      const roomUrl = process.env.NEXT_PUBLIC_LIVEKIT_URL;
+      if (!roomUrl) {
+        throw new Error('NEXT_PUBLIC_LIVEKIT_URL not configured');
+      }
+      
+      await livekitRoom.current.connect(roomUrl, tokenData.token);
       
       // Use the helper function to publish the pipeline's mic track
       const publication = await connectToLiveKitWithMicTrack(livekitRoom.current, pipelineMicTrack);

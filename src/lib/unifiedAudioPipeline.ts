@@ -174,7 +174,7 @@ export class UnifiedAudioPipeline {
       return;
     }
     
-    // Stop any existing TTS
+    // Stop any existing TTS first
     this.stopTTS();
     
     // Create new abort controller for this TTS call
@@ -259,11 +259,20 @@ export class UnifiedAudioPipeline {
       logError(`[UnifiedAudio] TTS failed for turn ${turnId}:`, error);
       this.config.onTTSError?.(error as Error);
     } finally {
-      this.stopTTS();
+      // Only stop TTS if this is still the current turn (not aborted)
+      if (this.currentTTSTurnId === turnId) {
+        this.stopTTS();
+      }
     }
   }
   
   stopTTS(): void {
+    // Pause audio first
+    if (this.audioElement) {
+      this.audioElement.pause();
+    }
+    
+    // Abort the controller if it exists
     if (this.currentTTSAbortController) {
       this.currentTTSAbortController.abort();
       this.currentTTSAbortController = null;
