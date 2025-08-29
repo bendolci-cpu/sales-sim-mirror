@@ -16,16 +16,25 @@ export default function BudgetBadge() {
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    
+    const fetchBudget = async () => {
       try {
         const res = await fetch("/api/budget");
         if (!res.ok) return;
         const json = (await res.json()) as BudgetResp;
         if (!cancelled) setData(json);
       } catch {}
-    })();
+    };
+
+    // Initial fetch
+    fetchBudget();
+
+    // Set up polling for real-time updates
+    const interval = setInterval(fetchBudget, 5000); // Update every 5 seconds
+
     return () => {
       cancelled = true;
+      clearInterval(interval);
     };
   }, []);
 

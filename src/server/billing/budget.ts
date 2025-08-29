@@ -78,4 +78,29 @@ export function addSpend(amountUsd: number): void {
   writeFileSafe(next);
 }
 
+export type UsageRecord = {
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+};
+
+// Rough cost estimates per 1K tokens (as of 2024)
+const COST_PER_1K_TOKENS: Record<string, number> = {
+  'gpt-4o-mini': 0.00015, // $0.15 per 1M tokens
+  'gpt-4o': 0.005,        // $5 per 1M tokens
+  'gpt-4-turbo': 0.01,    // $10 per 1M tokens
+  'tts-1': 0.015,         // $15 per 1M tokens
+  'gpt-4o-mini-tts': 0.015, // $15 per 1M tokens
+};
+
+export async function recordUsage(usage: UsageRecord): Promise<void> {
+  const costPer1K = COST_PER_1K_TOKENS[usage.model] || 0.001; // Default fallback
+  const totalCost = (usage.totalTokens / 1000) * costPer1K;
+  
+  console.log(`[Budget] Recording usage: ${usage.model}, ${usage.totalTokens} tokens, $${totalCost.toFixed(6)}`);
+  
+  addSpend(totalCost);
+}
+
 
