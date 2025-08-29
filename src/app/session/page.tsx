@@ -129,13 +129,18 @@ const roomRef = useRef<Room | null>(null);
   const unsubRef = useRef<(() => void) | null>(null);
   const turnSeqRef = useRef<number>(0);
 
-  // hydrate showChat from localStorage to avoid flicker
+  // hydrate showChat from localStorage to avoid flicker, or show by default in live mode
   useEffect(() => {
     try {
       const raw = typeof window !== "undefined" ? localStorage.getItem("showChatDebug") : null;
-      if (raw === "1") setShowChat(true);
+      if (raw === "1") {
+        setShowChat(true);
+      } else if (!isMock) {
+        // Show chat by default in live mode
+        setShowChat(true);
+      }
     } catch {}
-  }, []);
+  }, [isMock]);
 
   // helper to push turns with adjacent de-dupe and reflect into ChatWindow + history
   function pushTurn(role: "user" | "agent", text: string, extra?: { wpm?: number; interrupted?: boolean; audioUrl?: string }) {
@@ -968,6 +973,11 @@ async function endLiveKitCall() {
               <span className={`rounded-full px-2 py-0.5 text-[10px] ${isMock ? "bg-blue-50 text-blue-700" : "bg-gray-100 text-gray-700"}`}>
                 Mock: {isMock ? "On" : "Off"}
               </span>
+              {showChat && (
+                <span className="rounded-full px-2 py-0.5 text-[10px] bg-green-50 text-green-700">
+                  Chat: On
+                </span>
+              )}
             </div>
             <p className="text-xs text-gray-500">
               {modeLabel === "Challenge" && currentScenario ? `Scenario: ${currentScenario.title}` : ""}
@@ -987,6 +997,7 @@ async function endLiveKitCall() {
                   }
                 } catch {}
                 const nextIsMock = !isMock;
+                console.log(`[Toggle] Switching from ${isMock ? 'mock' : 'live'} to ${nextIsMock ? 'mock' : 'live'} mode`);
                 setIsMock(nextIsMock);
                 const params = new URLSearchParams(searchParams.toString());
                 params.set("mock", nextIsMock ? "1" : "0");
@@ -1051,6 +1062,12 @@ async function endLiveKitCall() {
         <div className="-mt-4 flex justify-end px-1 text-[11px] text-gray-500">
           <div className="flex items-center gap-2">
             <span>Mic: {micStatus}</span>
+            {micStream && (
+              <span className="text-xs">
+                ({micStream.getAudioTracks().length} tracks, 
+                {micStream.getAudioTracks()[0]?.readyState || 'unknown'} state)
+              </span>
+            )}
             {micStream && (
               <span className={`inline-flex items-center gap-1 px-1 rounded text-xs ${
                 micStream.getAudioTracks()[0]?.readyState === 'live' 
