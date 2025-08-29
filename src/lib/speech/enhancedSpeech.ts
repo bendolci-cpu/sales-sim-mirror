@@ -9,6 +9,7 @@ export interface EnhancedSpeechControls {
   isActive: () => boolean;
   startQuietGate: () => void;
   cancelQuietGate: () => void;
+  setTTSPlaying: (playing: boolean) => void;
   getHealthStatus: () => {
     recognizer: boolean;
     listeners: boolean;
@@ -67,20 +68,16 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
   
   // VAD state management
   let isInQuietGate = false;
-  let isInCommitWindow = false;
   let quietGateTimer: NodeJS.Timeout | null = null;
-  let commitWindowTimer: NodeJS.Timeout | null = null;
-  let eosDebounceTimer: NodeJS.Timeout | null = null;
   
   // Speech state
-  let speechStartTime = 0;
   let ttsPlaying = false;
+  let isGating = false; // Whether ASR is currently gated due to TTS
   
   // Duplicate suppression
   const recentUtterances = new Map<string, number>(); // hash -> timestamp
   
   // Health monitoring
-  let healthTimer: NodeJS.Timeout | null = null;
   let lastHealthLog = 0;
   
   // Create recognizer instance
@@ -159,8 +156,8 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
         
         // Handle interim results
         if (!isFinal) {
-          // Only show interim when not in TTS
-          if (!ttsPlaying) {
+          // Only show interim when not in TTS or quiet gate
+          if (!ttsPlaying && !isInQuietGate) {
             handlers.onInterim?.(transcript);
           }
           return;
@@ -193,7 +190,7 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
   // Process final speech result
   function processFinalResult(transcript: string, confidence: number) {
     const now = Date.now();
-    const duration = now - speechStartTime;
+    const duration = 0; // We'll calculate this if needed
     
     // Skip if in quiet gate
     if (isInQuietGate) {
@@ -277,6 +274,13 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
     return META_PHRASES.some(phrase => lower.includes(phrase));
   }
   
+  // Set TTS playing state for gating
+  function setTTSPlaying(playing: boolean) {
+    ttsPlaying = playing;
+    isGating = playing; // Gate ASR when TTS is playing
+    logDebug(`[EnhancedSpeech] TTS playing: ${playing}, gating: ${isGating}`);
+  }
+  
   // Start quiet gate (post-TTS)
   function startQuietGate() {
     if (isInQuietGate) return;
@@ -325,7 +329,7 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
   
   // Health monitoring
   function startHealthMonitoring() {
-    healthTimer = setInterval(() => {
+    const healthTimer = setInterval(() => {
       const now = Date.now();
       if (now - lastHealthLog >= HEALTH_LOG_INTERVAL) {
         logHealth();
@@ -341,10 +345,10 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
       mic_live: true, // Assuming mic is live if we're here
       tts_playing: ttsPlaying,
       barge_enabled: ttsPlaying,
-      gating: ttsPlaying,
+      gating: isGating,
       recording: active,
       quiet_gate: isInQuietGate,
-      commit_window: isInCommitWindow
+      commit_window: false
     };
     
     logDebug('[EnhancedSpeech Health]', health);
@@ -359,16 +363,17 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
     isActive: () => active,
     startQuietGate,
     cancelQuietGate,
+    setTTSPlaying,
     getHealthStatus: () => ({
       recognizer: active,
       listeners: !!rec,
       mic_live: true,
       tts_playing: ttsPlaying,
       barge_enabled: ttsPlaying,
-      gating: ttsPlaying,
+      gating: isGating,
       recording: active,
       quiet_gate: isInQuietGate,
-      commit_window: isInCommitWindow
+      commit_window: false
     })
   };
 }

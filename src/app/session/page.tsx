@@ -251,7 +251,7 @@ function SessionInner() {
       
       await livekitRoom.current.connect(roomUrl, token);
       
-      // Create local audio track from our mic stream
+      // Create local audio track from our existing mic track
       const localTrack = await createLocalAudioTrack();
       
       // Publish the track
@@ -261,7 +261,7 @@ function SessionInner() {
         setPublishedTrackId(localTrack.sid);
         logInfo(`[Session] Published track: ${localTrack.sid}`);
         
-        // Log track IDs for debugging
+        // Log track IDs for debugging - should be equal since we're using the same track
         logInfo(`[Mic/Publish] ids {micTrackId: ${micTrack.id}, publishedTrackId: ${localTrack.sid}, equal: ${micTrack.id === localTrack.sid}}`);
       }
       
@@ -274,7 +274,7 @@ function SessionInner() {
   const handleEnd = () => {
     if (!voiceConnected) return;
     
-    logInfo("[Session] Ending call");
+    logInfo("[Session] DISCONNECT_REASON:user_explicit_end");
     
     // Disconnect from LiveKit
     if (livekitRoom.current) {
@@ -338,10 +338,12 @@ function SessionInner() {
       // Unregister message handler
       unregisterMessageHandler(handleMessageDispatcher);
       
-      // Cleanup pipeline
-      cleanupUnifiedAudioPipeline();
+      // Only cleanup pipeline if call is not active (HMR-safe)
+      if (!voiceConnected) {
+        cleanupUnifiedAudioPipeline();
+      }
     };
-  }, [turns]); // Include turns in dependency to access latest state
+  }, [turns, voiceConnected]); // Include voiceConnected in dependency to access latest state
   
   // === RENDER ===
   

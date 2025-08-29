@@ -164,6 +164,11 @@ export class UnifiedAudioPipeline {
     logInfo(`[UnifiedAudio] Starting TTS for turn ${turnId}: "${text}"`);
     this.config.onTTSStart?.(turnId);
     
+    // Set TTS playing state for ASR gating
+    if (this.speechRecognition) {
+      this.speechRecognition.setTTSPlaying(true);
+    }
+    
     try {
       // Generate TTS audio URL
       const response = await fetch(`/api/tts?text=${encodeURIComponent(text)}`);
@@ -188,7 +193,7 @@ export class UnifiedAudioPipeline {
       // Setup AI analyzer for barge-in detection
       this.setupAIAnalyzer(this.audioElement);
       
-      // Start barge-in monitoring
+      // Start barge-in monitoring only when both analyzers are ready
       this.startBargeInMonitoring();
       
       // Play audio
@@ -246,12 +251,20 @@ export class UnifiedAudioPipeline {
       this.currentTTSTurnId = null;
     }
     
+    // Set TTS playing state to false for ASR gating
+    if (this.speechRecognition) {
+      this.speechRecognition.setTTSPlaying(false);
+    }
+    
     // Stop barge-in monitoring
     this.stopBargeInMonitoring();
   }
   
   private setupAIAnalyzer(audioElement: HTMLAudioElement): void {
-    if (!this.audioContext) return;
+    if (!this.audioContext) {
+      logWarn('[UnifiedAudio] No audio context available for AI analyzer');
+      return;
+    }
     
     // Clean up existing AI analyzer
     if (this.aiAnalyzer) {
@@ -266,6 +279,7 @@ export class UnifiedAudioPipeline {
       const aiSource = this.audioContext.createMediaElementSource(audioElement);
       aiSource.connect(this.aiAnalyzer);
       
+      logInfo('[UnifiedAudio] AI_ANALYZER_READY:true');
       logDebug('[UnifiedAudio] AI analyzer setup complete');
     } catch (error) {
       logWarn('[UnifiedAudio] Failed to setup AI analyzer:', error);
@@ -277,7 +291,14 @@ export class UnifiedAudioPipeline {
   private startBargeInMonitoring(): void {
     if (this.bargeInMonitoring) return;
     
+    // Only start monitoring when both analyzers are ready
+    if (!this.micAnalyzer || !this.aiAnalyzer) {
+      logWarn('[UnifiedAudio] Analyzers not ready for barge-in monitoring - mic:', !!this.micAnalyzer, 'ai:', !!this.aiAnalyzer);
+      return;
+    }
+    
     this.bargeInMonitoring = true;
+    logInfo('[UnifiedAudio] BARGE_MONITORING_START mic:true ai:true');
     logDebug('[UnifiedAudio] Starting barge-in monitoring');
     
     this.bargeInInterval = setInterval(() => {
@@ -311,6 +332,7 @@ export class UnifiedAudioPipeline {
       if (!this.bargeInTimer) {
         // Start barge-in timer
         this.bargeInTimer = setTimeout(() => {
+          logInfo(`[UnifiedAudio] BARGE_SPEECH_DETECTED rms:${micRMS.toFixed(1)}`);
           logInfo(`[UnifiedAudio] Barge-in detected - micRMS:${micRMS.toFixed(1)}, aiRMS:${aiRMS.toFixed(1)}`);
           this.stopTTS();
           this.config.onBargeIn?.();
@@ -364,6 +386,7 @@ export class UnifiedAudioPipeline {
   // === CLEANUP ===
   
   cleanup(): void {
+    logInfo('[UnifiedAudio] DISCONNECT_REASON:cleanup_requested');
     logInfo('[UnifiedAudio] Cleaning up pipeline');
     
     // Stop health monitoring
