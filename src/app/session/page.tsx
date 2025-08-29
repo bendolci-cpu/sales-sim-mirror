@@ -7,21 +7,16 @@ import ClientOnly from "@/components/ClientOnly";
 const ChatWindowClient = dynamic(() => import("@/components/ChatWindow"), { ssr: false });
 import BudgetBadge from "@/components/BudgetBadge";
 import ScenarioPicker from "@/components/ScenarioPicker";
-import { SCENARIOS, type Scenario } from "@/data/scenarios";
+import { SCENARIOS } from "@/data/scenarios";
 import { getAgentReply } from "@/lib/voice/mockAgent";
 import CallBar from "@/components/CallBar";
 import DebugToggle from "@/components/DebugToggle";
 import AudioDeviceSelector from "@/components/AudioDeviceSelector";
-import { saveCall } from "@/lib/calls/store";
-import type { CallMeta, CallTurn } from "@/lib/calls/types";
-import { logInfo, logWarn, logError } from "@/lib/logger";
+import { logInfo, logError } from "@/lib/logger";
 import { registerMessageHandler, unregisterMessageHandler, setMessageDispatcherConnected } from "@/lib/messageDispatcher";
 import { getUnifiedAudioPipeline, cleanupUnifiedAudioPipeline } from "@/lib/unifiedAudioPipeline";
-
-// Audio pipeline constants
-const MIC_RMS_SPEECH = 55;
-const AI_RMS_GATE = 20;
-const MIN_UTTERANCE_MS = 600;
+import { Room, createLocalAudioTrack } from "livekit-client";
+import type { MessageRequest, MessageResponse } from "@/lib/messageDispatcher";
 
 interface Turn {
   id: string;
@@ -48,21 +43,42 @@ function SessionInner() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [externalTurn, setExternalTurn] = useState<{ role: "user" | "bot"; text: string; timestamp: number } | null>(null);
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
+  const [micTrack, setMicTrack] = useState<MediaStreamTrack | null>(null);
+  const [publishedTrackId, setPublishedTrackId] = useState<string | null>(null);
   
   // Refs
   const unifiedPipeline = useRef<ReturnType<typeof getUnifiedAudioPipeline> | null>(null);
+  const livekitRoom = useRef<Room | null>(null);
   const scenario = SCENARIOS.find(s => s.id === scenarioId);
   
   // Initialize pipeline on client side only
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      unifiedPipeline.current = getUnifiedAudioPipeline();
+      unifiedPipeline.current = getUnifiedAudioPipeline({
+        onMicTrackReady: (track) => {
+          setMicTrack(track);
+          logInfo(`[Session] Mic track ready: ${track.id}`);
+        },
+        onBargeIn: () => {
+          logInfo('[Session] Barge-in triggered');
+        },
+        onTTSStart: (turnId) => {
+          logInfo(`[Session] TTS started for turn: ${turnId}`);
+        },
+        onTTSEnd: (turnId) => {
+          logInfo(`[Session] TTS ended for turn: ${turnId}`);
+          // Don't auto-end the call - keep it connected
+        },
+        onTTSError: (error) => {
+          logError('[Session] TTS error:', error);
+        }
+      });
     }
   }, []);
   
   // === MESSAGE DISPATCHER HANDLER ===
   
-  const handleMessageDispatcher = async (request: any) => {
+  const handleMessageDispatcher = async (request: MessageRequest): Promise<MessageResponse> => {
     const { text, metadata } = request;
     const turnId = crypto.randomUUID();
     
@@ -168,6 +184,11 @@ function SessionInner() {
       const stream = unifiedPipeline.current.getMicStream();
       setMicStream(stream);
       
+      // Connect to LiveKit if not in mock mode
+      if (!isMock) {
+        await connectToLiveKit();
+      }
+      
       // Connect message dispatcher
       logInfo("[Session] Connecting message dispatcher...");
       setMessageDispatcherConnected(true);
@@ -192,7 +213,7 @@ function SessionInner() {
           timestamp: greetingTurn.timestamp
         });
         
-        if (!isMock && unifiedPipeline.current) {
+        if (!isMock) {
           try {
             logInfo("[Session] Starting TTS for greeting...");
             await unifiedPipeline.current.playTTS(greeting, greetingTurn.id);
@@ -214,10 +235,52 @@ function SessionInner() {
     }
   };
   
+  const connectToLiveKit = async () => {
+    if (!micTrack) {
+      logError("[Session] No mic track available for LiveKit");
+      return;
+    }
+    
+    try {
+      // Create LiveKit room
+      livekitRoom.current = new Room();
+      
+      // Connect to room (you'll need to configure the room URL)
+      const roomUrl = process.env.NEXT_PUBLIC_LIVEKIT_URL || 'wss://your-livekit-server.com';
+      const token = 'your-token'; // You'll need to implement token generation
+      
+      await livekitRoom.current.connect(roomUrl, token);
+      
+      // Create local audio track from our mic stream
+      const localTrack = await createLocalAudioTrack();
+      
+      // Publish the track
+      await livekitRoom.current.localParticipant.publishTrack(localTrack);
+      
+      if (localTrack.sid) {
+        setPublishedTrackId(localTrack.sid);
+        logInfo(`[Session] Published track: ${localTrack.sid}`);
+        
+        // Log track IDs for debugging
+        logInfo(`[Mic/Publish] ids {micTrackId: ${micTrack.id}, publishedTrackId: ${localTrack.sid}, equal: ${micTrack.id === localTrack.sid}}`);
+      }
+      
+      logInfo("[Session] Connected to LiveKit room");
+    } catch (error) {
+      logError("[Session] Failed to connect to LiveKit:", error);
+    }
+  };
+  
   const handleEnd = () => {
     if (!voiceConnected) return;
     
     logInfo("[Session] Ending call");
+    
+    // Disconnect from LiveKit
+    if (livekitRoom.current) {
+      livekitRoom.current.disconnect();
+      livekitRoom.current = null;
+    }
     
     // Disconnect message dispatcher
     setMessageDispatcherConnected(false);
@@ -227,6 +290,8 @@ function SessionInner() {
     
     setVoiceConnected(false);
     setMicStream(null);
+    setMicTrack(null);
+    setPublishedTrackId(null);
     setTurns([]);
     setExternalTurn(null);
     logInfo("[Session] Call ended");
@@ -254,7 +319,13 @@ function SessionInner() {
     });
     
     // Process through message dispatcher
-    handleMessageDispatcher({ text, metadata: { source: "chat" } });
+    handleMessageDispatcher({
+      text,
+      metadata: { 
+        source: "text",
+        timestamp: Date.now()
+      }
+    });
   };
   
   // === LIFECYCLE ===
@@ -293,9 +364,9 @@ function SessionInner() {
           <div className="mb-8 flex items-center justify-between">
             <div>
               <h1 className="text-2xl font-bold text-gray-900">Sales Simulation</h1>
-                          <p className="text-gray-600">
-              {scenario.title} • {mode} • {isMock ? "Mock" : "Live"} • {voiceConnected ? "Connected" : "Disconnected"}
-            </p>
+              <p className="text-gray-600">
+                {scenario.title} • {mode} • {isMock ? "Mock" : "Live"} • {voiceConnected ? "Connected" : "Disconnected"}
+              </p>
             </div>
             
             <div className="flex items-center gap-4">
@@ -372,6 +443,8 @@ function SessionInner() {
                   <div>TTS: {unifiedPipeline.current.isTTSPlaying() ? "Playing" : "Idle"}</div>
                   <div>Current Turn: {unifiedPipeline.current.getCurrentTurnId() || "None"}</div>
                   <div>Turns: {turns.length}</div>
+                  <div>Mic Track: {micTrack?.id || "None"}</div>
+                  <div>Published Track: {publishedTrackId || "None"}</div>
                 </div>
               </div>
             )}

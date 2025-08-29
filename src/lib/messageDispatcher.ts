@@ -2,7 +2,7 @@
 import { logInfo, logError, logWarn } from './logger';
 
 export interface MessageMetadata {
-  source: 'voice' | 'text';
+  source: 'voice' | 'text' | 'speech';
   timestamp: number;
   roomId?: string;
   participantId?: string;
@@ -32,6 +32,7 @@ class MessageDispatcher {
   private retryCount = 0;
   private maxRetries = 3;
   private retryDelay = 1000; // Start with 1 second
+  private awaitingAI = false;
 
   // Register a message handler
   registerHandler(handler: MessageHandler) {
@@ -58,26 +59,18 @@ class MessageDispatcher {
   }
 
   // Send a message (main entry point)
-  async sendMessage(text: string, metadata: Omit<MessageMetadata, 'timestamp'>): Promise<MessageResponse | null> {
-    const request: MessageRequest = {
-      text: text.trim(),
-      metadata: {
-        ...metadata,
-        timestamp: Date.now()
-      }
-    };
-
-    if (!request.text) {
+  async sendMessage(request: MessageRequest): Promise<MessageResponse | null> {
+    if (!request.text || !request.text.trim()) {
       logWarn('[MessageDispatcher] Empty message, ignoring');
       return null;
     }
 
     const messageId = crypto.randomUUID();
-    logInfo('[Speech→AI] Sent utterance', { 
+    logInfo('[MessageDispatcher] Processing message', { 
       id: messageId, 
       text: request.text.slice(0, 60) + (request.text.length > 60 ? '...' : ''),
-      source: metadata.source,
-      confidence: metadata.confidence
+      source: request.metadata.source,
+      confidence: request.metadata.confidence
     });
 
     // If not connected, queue the message
@@ -87,65 +80,80 @@ class MessageDispatcher {
       return null;
     }
 
+    // If already awaiting AI response, queue this message
+    if (this.awaitingAI) {
+      this.messageQueue.push(request);
+      logInfo('[MessageDispatcher] Awaiting AI response, queuing message', { queueLength: this.messageQueue.length });
+      return null;
+    }
+
     return this.processMessage(request, messageId);
   }
 
   // Process a single message with retry logic
   private async processMessage(request: MessageRequest, messageId: string): Promise<MessageResponse> {
+    this.awaitingAI = true;
+    
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       try {
         // Try all handlers
         for (const handler of this.handlers) {
           try {
             const response = await handler(request);
+            
             if (response.success) {
-              logInfo('[AI→Chat] Received response', { 
+              logInfo('[MessageDispatcher] Message processed successfully', { 
                 id: messageId, 
-                len: response.text.length,
-                responseId: response.id 
+                responseLength: response.text.length 
               });
+              
+              // Process any queued messages
+              this.awaitingAI = false;
+              this.processQueue();
+              
               return response;
+            } else {
+              logWarn('[MessageDispatcher] Handler returned failure', { 
+                id: messageId, 
+                error: response.error 
+              });
             }
           } catch (handlerError) {
             logError('[MessageDispatcher] Handler error', { 
-              handler: handler.name || 'anonymous',
-              error: handlerError instanceof Error ? handlerError.message : 'Unknown error'
+              id: messageId, 
+              error: handlerError 
             });
           }
         }
-
+        
         // If we get here, no handler succeeded
         throw new Error('No handler processed the message successfully');
-
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         
-        if (attempt < this.maxRetries) {
-          this.retryCount++;
-          const delay = this.retryDelay * Math.pow(2, attempt); // Exponential backoff
-          logWarn('[AI Transport] Error, will retry', { 
-            attempt: attempt + 1, 
-            maxRetries: this.maxRetries,
-            delay,
-            error: errorMessage 
+      } catch (error) {
+        if (attempt === this.maxRetries) {
+          logError('[MessageDispatcher] Max retries reached', { 
+            id: messageId, 
+            error, 
+            attempts: attempt + 1 
           });
-          await new Promise(resolve => setTimeout(resolve, delay));
-        } else {
-          logError('[AI Transport] Error, max retries exceeded', { 
-            attempts: attempt + 1,
-            error: errorMessage 
-          });
+          
+          this.awaitingAI = false;
+          this.processQueue();
+          
           return {
             id: messageId,
             text: '',
             success: false,
-            error: errorMessage
+            error: error instanceof Error ? error.message : 'Unknown error'
           };
         }
+        
+        // Wait before retry
+        await new Promise(resolve => setTimeout(resolve, this.retryDelay * Math.pow(2, attempt)));
       }
     }
-
-    // This should never be reached, but TypeScript requires it
+    
+    this.awaitingAI = false;
     return {
       id: messageId,
       text: '',
@@ -156,49 +164,73 @@ class MessageDispatcher {
 
   // Process queued messages
   private async processQueue() {
-    const queue = [...this.messageQueue];
-    this.messageQueue = [];
-    
-    for (const request of queue) {
-      try {
-        await this.processMessage(request, crypto.randomUUID());
-      } catch (error) {
-        logError('[MessageDispatcher] Failed to process queued message', { error });
-        // Re-queue failed messages
-        this.messageQueue.push(request);
-      }
+    if (this.messageQueue.length === 0 || this.awaitingAI) {
+      return;
+    }
+
+    const request = this.messageQueue.shift();
+    if (request) {
+      logInfo('[MessageDispatcher] Processing queued message', { 
+        queueLength: this.messageQueue.length 
+      });
+      await this.sendMessage(request);
     }
   }
 
-  // Get queue status
-  getQueueStatus() {
-    return {
-      queueLength: this.messageQueue.length,
-      isConnected: this.isConnected,
-      retryCount: this.retryCount
-    };
+  // Get connection status
+  isConnected(): boolean {
+    return this.isConnected;
+  }
+
+  // Get queue length
+  getQueueLength(): number {
+    return this.messageQueue.length;
+  }
+
+  // Get awaiting AI status
+  isAwaitingAI(): boolean {
+    return this.awaitingAI;
   }
 
   // Clear queue
   clearQueue() {
-    const length = this.messageQueue.length;
     this.messageQueue = [];
-    logInfo('[MessageDispatcher] Cleared message queue', { clearedCount: length });
+    logInfo('[MessageDispatcher] Queue cleared');
   }
 }
 
-// Export singleton instance
-export const messageDispatcher = new MessageDispatcher();
+// Singleton instance
+const messageDispatcher = new MessageDispatcher();
 
-// Export convenience functions
-export const sendMessage = (text: string, metadata: Omit<MessageMetadata, 'timestamp'>) => 
-  messageDispatcher.sendMessage(text, metadata);
-
-export const registerMessageHandler = (handler: MessageHandler) => 
+// Export functions
+export function registerMessageHandler(handler: MessageHandler) {
   messageDispatcher.registerHandler(handler);
+}
 
-export const unregisterMessageHandler = (handler: MessageHandler) => 
+export function unregisterMessageHandler(handler: MessageHandler) {
   messageDispatcher.unregisterHandler(handler);
+}
 
-export const setMessageDispatcherConnected = (connected: boolean) => 
+export function sendMessage(request: MessageRequest): Promise<MessageResponse | null> {
+  return messageDispatcher.sendMessage(request);
+}
+
+export function setMessageDispatcherConnected(connected: boolean) {
   messageDispatcher.setConnected(connected);
+}
+
+export function isMessageDispatcherConnected(): boolean {
+  return messageDispatcher.isConnected();
+}
+
+export function getMessageQueueLength(): number {
+  return messageDispatcher.getQueueLength();
+}
+
+export function isAwaitingAI(): boolean {
+  return messageDispatcher.isAwaitingAI();
+}
+
+export function clearMessageQueue() {
+  messageDispatcher.clearQueue();
+}

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
+import { logInfo, logError } from "@/lib/logger";
 
 export const runtime = "nodejs";
 
@@ -7,45 +8,38 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-export async function POST(req: NextRequest) {
+interface ChatMessage {
+  role: string;
+  text?: string;
+  content?: string;
+}
+
+export async function POST(request: NextRequest) {
   try {
-    const body = await req.json();
-    const { messages, scenario } = body;
+    const body = await request.json();
+    const { messages } = body;
 
     if (!messages || !Array.isArray(messages)) {
-      return NextResponse.json({ error: "messages array is required" }, { status: 400 });
+      return NextResponse.json(
+        { error: "Messages array is required" },
+        { status: 400 }
+      );
     }
 
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      console.warn("OPENAI_API_KEY not configured, returning fallback response");
-      return NextResponse.json({ 
-        content: "I'm here to help with your sales training. How can I assist you today?",
-        fallback: true
-      });
-    }
+    // Filter out messages with empty/null content and provide defaults
+    const openaiMessages = messages
+      .filter((msg: ChatMessage) => msg.text || msg.content) // Filter out empty messages
+      .map((msg: ChatMessage) => ({
+        role: msg.role === "agent" ? "assistant" : msg.role,
+        content: msg.text || msg.content || "" // Provide default empty string
+      }));
 
-    // Build system message based on scenario
-    let systemMessage = "You are a helpful sales training assistant. Keep responses concise and natural for voice conversation. Respond in 1-2 sentences maximum.";
-    
-    if (scenario) {
-      systemMessage += `\n\nCurrent scenario: ${scenario.topic || 'Sales Training'}`;
-      if (scenario.persona) {
-        systemMessage += `\nYou are role-playing as: ${scenario.persona}`;
-      }
-      if (scenario.brief) {
-        systemMessage += `\nScenario context: ${scenario.brief}`;
-      }
+    if (openaiMessages.length === 0) {
+      return NextResponse.json(
+        { error: "No valid messages found" },
+        { status: 400 }
+      );
     }
-
-    // Prepare messages for OpenAI
-    const openaiMessages = [
-      { role: "system", content: systemMessage },
-      ...messages.map((msg: any) => ({
-        role: msg.role === "user" ? "user" : "assistant",
-        content: msg.text || msg.content || ""
-      })).filter(msg => msg.content && msg.content.trim() !== "")
-    ];
 
     console.log("[Chat] Generating response for messages:", openaiMessages.length);
 
@@ -54,36 +48,49 @@ export async function POST(req: NextRequest) {
       messages: openaiMessages,
       max_tokens: 60, // Shorter responses for speed
       temperature: 0.7,
-      stream: false,
     });
 
-    const response = completion.choices[0]?.message?.content || "I didn't catch that. Could you please repeat?";
+    const responseText = completion.choices[0]?.message?.content?.trim() || "I didn't catch that. Could you please repeat?";
 
-    // Track usage for budget
-    if (completion.usage) {
-      try {
-        await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/budget/track`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: 'gpt-4o-mini',
-            usage: completion.usage
-          })
-        });
-      } catch (e) {
-        console.warn('Failed to track budget usage:', e);
+    // Generate TTS URL for the response
+    let ttsUrl = null;
+    try {
+      const ttsResponse = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/tts?text=${encodeURIComponent(responseText)}`);
+      if (ttsResponse.ok) {
+        const ttsData = await ttsResponse.json();
+        ttsUrl = ttsData.audioUrl;
       }
+    } catch (error) {
+      logError("[Chat] TTS generation failed:", error);
+      // Continue without TTS - the response will still be returned
     }
 
-    return NextResponse.json({ 
-      content: response,
-      usage: completion.usage
+    const response = {
+      content: responseText,
+      response: responseText, // For backward compatibility
+      audioUrl: ttsUrl,
+      success: true
+    };
+
+    logInfo("[Chat] Generated response successfully", {
+      responseLength: responseText.length,
+      hasTTS: !!ttsUrl
     });
+
+    return NextResponse.json(response);
+
   } catch (error) {
-    console.error("Chat completion error:", error);
-    return NextResponse.json({ 
-      error: "Chat completion failed",
-      details: error instanceof Error ? error.message : String(error)
-    }, { status: 500 });
+    logError("[Chat] Error generating response:", error);
+    
+    // Return a fallback response even if TTS fails
+    const fallbackResponse = {
+      content: "I'm having trouble processing that right now. Could you please try again?",
+      response: "I'm having trouble processing that right now. Could you please try again?",
+      audioUrl: null,
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error"
+    };
+
+    return NextResponse.json(fallbackResponse, { status: 500 });
   }
 }

@@ -10,14 +10,17 @@ export interface UnifiedAudioPipelineConfig {
   onTTSStart?: (turnId: string) => void;
   onTTSEnd?: (turnId: string) => void;
   onTTSError?: (error: Error) => void;
+  onMicTrackReady?: (track: MediaStreamTrack) => void;
 }
 
 export class UnifiedAudioPipeline {
   // Core audio context and state
   private audioContext: AudioContext | null = null;
   private micStream: MediaStream | null = null;
+  private micTrack: MediaStreamTrack | null = null;
   private micAnalyzer: AnalyserNode | null = null;
   private aiAnalyzer: AnalyserNode | null = null;
+  private micSource: MediaStreamAudioSourceNode | null = null;
   
   // Speech recognition
   private speechRecognition: EnhancedSpeechControls | null = null;
@@ -26,10 +29,19 @@ export class UnifiedAudioPipeline {
   // TTS playback
   private currentTTSAbortController: AbortController | null = null;
   private currentTTSTurnId: string | null = null;
+  private audioElement: HTMLAudioElement | null = null;
   
   // Barge-in detection
   private bargeInMonitoring = false;
   private bargeInInterval: NodeJS.Timeout | null = null;
+  private aiRMSThreshold = 20;
+  private micRMSThreshold = 55;
+  private bargeInDelay = 150; // ms to wait before barge-in
+  private bargeInTimer: NodeJS.Timeout | null = null;
+  
+  // Health monitoring
+  private healthInterval: NodeJS.Timeout | null = null;
+  private lastHealthLog = 0;
   
   // Configuration
   private config: UnifiedAudioPipelineConfig;
@@ -52,6 +64,9 @@ export class UnifiedAudioPipeline {
     // Initialize speech recognition
     await this.initializeSpeechRecognition();
     
+    // Start health monitoring
+    this.startHealthMonitoring();
+    
     logInfo('[UnifiedAudio] Pipeline initialized successfully');
   }
   
@@ -73,15 +88,27 @@ export class UnifiedAudioPipeline {
         } 
       });
       
+      // Get the single mic track
+      const tracks = this.micStream.getAudioTracks();
+      if (tracks.length === 0) {
+        throw new Error('No audio tracks found in mic stream');
+      }
+      
+      this.micTrack = tracks[0];
+      logInfo(`[UnifiedAudio] Mic track ready: ${this.micTrack.id}`);
+      
       // Setup mic analyzer
       if (this.audioContext) {
         this.micAnalyzer = this.audioContext.createAnalyser();
         this.micAnalyzer.fftSize = 256;
         this.micAnalyzer.smoothingTimeConstant = 0.8;
         
-        const micSource = this.audioContext.createMediaStreamSource(this.micStream);
-        micSource.connect(this.micAnalyzer);
+        this.micSource = this.audioContext.createMediaStreamSource(this.micStream);
+        this.micSource.connect(this.micAnalyzer);
       }
+      
+      // Notify that mic track is ready
+      this.config.onMicTrackReady?.(this.micTrack);
       
       logInfo('[UnifiedAudio] Microphone initialized with analyzer');
     } catch (error) {
@@ -118,7 +145,7 @@ export class UnifiedAudioPipeline {
       throw new Error('Failed to create speech recognition');
     }
     
-    // Start recognition immediately
+    // Start recognition immediately and keep it running
     await this.speechRecognition.start();
     this.isRecognitionActive = true;
     logInfo('[UnifiedAudio] Speech recognition started');
@@ -147,13 +174,19 @@ export class UnifiedAudioPipeline {
       const data = await response.json();
       const audioUrl = data.audioUrl;
       
-      // Create audio element
-      const audioElement = document.createElement('audio');
-      audioElement.src = audioUrl;
-      audioElement.volume = 0.7;
+      // Create or reuse audio element
+      if (!this.audioElement) {
+        this.audioElement = document.createElement('audio');
+        this.audioElement.volume = 1.0; // Full volume
+        this.audioElement.muted = false; // Not muted
+        this.audioElement.style.display = 'none'; // Hidden
+        document.body.appendChild(this.audioElement);
+      }
+      
+      this.audioElement.src = audioUrl;
       
       // Setup AI analyzer for barge-in detection
-      this.setupAIAnalyzer(audioElement);
+      this.setupAIAnalyzer(this.audioElement);
       
       // Start barge-in monitoring
       this.startBargeInMonitoring();
@@ -166,18 +199,18 @@ export class UnifiedAudioPipeline {
           return;
         }
         
-        audioElement.addEventListener('canplaythrough', () => {
+        this.audioElement!.addEventListener('canplaythrough', () => {
           if (abortController.signal.aborted) {
             reject(new Error('TTS aborted during load'));
             return;
           }
           
-          audioElement.play().then(() => {
+          this.audioElement!.play().then(() => {
             logInfo(`[UnifiedAudio] TTS playing for turn ${turnId}`);
           }).catch(reject);
         }, { once: true });
         
-        audioElement.addEventListener('ended', () => {
+        this.audioElement!.addEventListener('ended', () => {
           if (!abortController.signal.aborted) {
             logInfo(`[UnifiedAudio] TTS completed for turn ${turnId}`);
             this.config.onTTSEnd?.(turnId);
@@ -185,7 +218,7 @@ export class UnifiedAudioPipeline {
           resolve();
         }, { once: true });
         
-        audioElement.addEventListener('error', (e) => {
+        this.audioElement!.addEventListener('error', (e) => {
           reject(new Error(`TTS playback error: ${e}`));
         }, { once: true });
         
@@ -257,6 +290,12 @@ export class UnifiedAudioPipeline {
       clearInterval(this.bargeInInterval);
       this.bargeInInterval = null;
     }
+    
+    if (this.bargeInTimer) {
+      clearTimeout(this.bargeInTimer);
+      this.bargeInTimer = null;
+    }
+    
     this.bargeInMonitoring = false;
     logDebug('[UnifiedAudio] Stopped barge-in monitoring');
   }
@@ -267,11 +306,22 @@ export class UnifiedAudioPipeline {
     const micRMS = this.calculateRMS(this.micAnalyzer);
     const aiRMS = this.calculateRMS(this.aiAnalyzer);
     
-    // Barge-in condition: mic is significantly louder than AI
-    if (micRMS > aiRMS * 1.2 && micRMS > 15) {
-      logInfo(`[UnifiedAudio] Barge-in detected - micRMS:${micRMS.toFixed(1)}, aiRMS:${aiRMS.toFixed(1)}`);
-      this.stopTTS();
-      this.config.onBargeIn?.();
+    // Barge-in condition: AI is quiet and mic is loud
+    if (aiRMS < this.aiRMSThreshold && micRMS > this.micRMSThreshold) {
+      if (!this.bargeInTimer) {
+        // Start barge-in timer
+        this.bargeInTimer = setTimeout(() => {
+          logInfo(`[UnifiedAudio] Barge-in detected - micRMS:${micRMS.toFixed(1)}, aiRMS:${aiRMS.toFixed(1)}`);
+          this.stopTTS();
+          this.config.onBargeIn?.();
+        }, this.bargeInDelay);
+      }
+    } else {
+      // Reset barge-in timer
+      if (this.bargeInTimer) {
+        clearTimeout(this.bargeInTimer);
+        this.bargeInTimer = null;
+      }
     }
   }
   
@@ -286,10 +336,41 @@ export class UnifiedAudioPipeline {
     return Math.sqrt(sum / dataArray.length);
   }
   
+  // === HEALTH MONITORING ===
+  
+  private startHealthMonitoring(): void {
+    this.healthInterval = setInterval(() => {
+      const now = Date.now();
+      if (now - this.lastHealthLog >= 1000) { // Log once per second
+        this.logHealth();
+        this.lastHealthLog = now;
+      }
+    }, 1000);
+  }
+  
+  private logHealth(): void {
+    const health = {
+      recognizer: this.isRecognitionActive,
+      mic_live: this.micTrack?.readyState === 'live',
+      tts_playing: this.currentTTSTurnId !== null,
+      barge_enabled: this.bargeInMonitoring,
+      gating: this.currentTTSTurnId !== null, // Gate on TTS
+      recording: this.isRecognitionActive
+    };
+    
+    logDebug('[Health]', health);
+  }
+  
   // === CLEANUP ===
   
   cleanup(): void {
     logInfo('[UnifiedAudio] Cleaning up pipeline');
+    
+    // Stop health monitoring
+    if (this.healthInterval) {
+      clearInterval(this.healthInterval);
+      this.healthInterval = null;
+    }
     
     // Stop TTS
     this.stopTTS();
@@ -306,6 +387,12 @@ export class UnifiedAudioPipeline {
       this.micStream = null;
     }
     
+    // Clean up audio element
+    if (this.audioElement) {
+      this.audioElement.remove();
+      this.audioElement = null;
+    }
+    
     // Clean up audio context
     if (this.audioContext) {
       this.audioContext.close();
@@ -315,6 +402,8 @@ export class UnifiedAudioPipeline {
     // Clear analyzers
     this.micAnalyzer = null;
     this.aiAnalyzer = null;
+    this.micSource = null;
+    this.micTrack = null;
     
     logInfo('[UnifiedAudio] Pipeline cleanup complete');
   }
@@ -331,6 +420,10 @@ export class UnifiedAudioPipeline {
   
   getMicStream(): MediaStream | null {
     return this.micStream;
+  }
+  
+  getMicTrack(): MediaStreamTrack | null {
+    return this.micTrack;
   }
 }
 
