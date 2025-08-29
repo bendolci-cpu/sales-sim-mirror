@@ -25,7 +25,7 @@ const MIN_UTTERANCE_MS = 600;
 
 interface Turn {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "agent";
   text: string;
   timestamp: number;
 }
@@ -50,8 +50,15 @@ function SessionInner() {
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
   
   // Refs
-  const unifiedPipeline = useRef(getUnifiedAudioPipeline());
+  const unifiedPipeline = useRef<ReturnType<typeof getUnifiedAudioPipeline> | null>(null);
   const scenario = SCENARIOS.find(s => s.id === scenarioId);
+  
+  // Initialize pipeline on client side only
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      unifiedPipeline.current = getUnifiedAudioPipeline();
+    }
+  }, []);
   
   // === MESSAGE DISPATCHER HANDLER ===
   
@@ -101,7 +108,7 @@ function SessionInner() {
       // Add AI turn
       const aiTurn: Turn = {
         id: crypto.randomUUID(),
-        role: "assistant",
+        role: "agent",
         text: aiResponse,
         timestamp: Date.now()
       };
@@ -115,7 +122,7 @@ function SessionInner() {
       });
       
       // Play TTS if connected
-      if (voiceConnected && !isMock) {
+      if (voiceConnected && !isMock && unifiedPipeline.current) {
         try {
           await unifiedPipeline.current.playTTS(aiResponse, aiTurn.id);
         } catch (error) {
@@ -150,6 +157,9 @@ function SessionInner() {
     
     try {
       // Initialize unified pipeline
+      if (!unifiedPipeline.current) {
+        throw new Error("Pipeline not initialized");
+      }
       logInfo("[Session] Initializing unified pipeline...");
       await unifiedPipeline.current.initialize();
       logInfo("[Session] Unified pipeline initialized successfully");
@@ -166,25 +176,26 @@ function SessionInner() {
       logInfo("[Session] Call started successfully");
       
       // Play greeting if available
-      if (scenario?.greeting) {
-        logInfo(`[Session] Playing greeting: "${scenario.greeting}"`);
+      const greeting = scenario?.starterMessages?.[0];
+      if (greeting) {
+        logInfo(`[Session] Playing greeting: "${greeting}"`);
         const greetingTurn: Turn = {
           id: crypto.randomUUID(),
-          role: "assistant",
-          text: scenario.greeting,
+          role: "agent",
+          text: greeting,
           timestamp: Date.now()
         };
         setTurns([greetingTurn]);
         setExternalTurn({
           role: "bot",
-          text: scenario.greeting,
+          text: greeting,
           timestamp: greetingTurn.timestamp
         });
         
-        if (!isMock) {
+        if (!isMock && unifiedPipeline.current) {
           try {
             logInfo("[Session] Starting TTS for greeting...");
-            await unifiedPipeline.current.playTTS(scenario.greeting, greetingTurn.id);
+            await unifiedPipeline.current.playTTS(greeting, greetingTurn.id);
             logInfo("[Session] Greeting TTS completed");
           } catch (error) {
             logError(`[Session] Greeting TTS failed:`, error);
