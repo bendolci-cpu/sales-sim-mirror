@@ -1,0 +1,31 @@
+{
+  "id": "edfdba76-2fca-499b-85dd-8a0b92fde16a",
+  "createdAt": 1756430647156,
+  "turns": [
+    {
+      "role": "agent",
+      "text": "Hi, this is ED Charge Nurse. ED needs sub‑5‑minute room turnovers.",
+      "url": "/uploads/aud-1756430620702.mp3"
+    },
+    {
+      "role": "user",
+      "text": "hey can you hear me",
+      "url": "/api/audio/c80d3a49-662d-440e-a6f3-afd82e7df78a"
+    },
+    {
+      "role": "agent",
+      "text": "I’m listening. What’s top of mind today?",
+      "url": "/uploads/aud-1756430631536.mp3"
+    },
+    {
+      "role": "user",
+      "text": "I don't know what do you want to talk about",
+      "url": "/api/audio/fad2c70c-d8ed-4da8-9627-1af27f7df851"
+    },
+    {
+      "role": "agent",
+      "text": "Sure—if now’s not ideal, what would make the timing right?",
+      "url": "/uploads/aud-1756430643024.mp3"
+    }
+  ]
+}

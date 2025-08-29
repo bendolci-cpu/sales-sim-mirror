@@ -606,7 +606,6 @@ async function endLiveKitCall() {
                 stopSpeaking();
               }
                             if (currentScenario) {
-                const reply = getAgentReply(historyRef.current, currentScenario);
                 const currentTurnSeq = ++turnSeqRef.current;
                 
                 setTimeout(async () => {
@@ -619,11 +618,8 @@ async function endLiveKitCall() {
                   // Add a longer delay to prevent rapid feedback loops
                   await new Promise(resolve => setTimeout(resolve, 1000));
                   
-                  // AGGRESSIVE duplicate detection - prevent AI from responding to itself
-                  const lastTurn = historyRef.current[historyRef.current.length - 1];
-                  const isDuplicate = lastTurn && lastTurn.role === "agent" && lastTurn.text === reply;
-                  
                   // Prevent AI from responding if the last turn was from AI
+                  const lastTurn = historyRef.current[historyRef.current.length - 1];
                   const lastTurnWasAgent = lastTurn && lastTurn.role === "agent";
                   
                   // Check if we've had too many consecutive agent turns (prevent infinite loops)
@@ -632,11 +628,10 @@ async function endLiveKitCall() {
                   
                   // Only respond if the last turn was from user AND we haven't had too many agent turns
                   // AND we're actually waiting for user input AND AI is not currently speaking
-                  const shouldRespond = !isDuplicate && !lastTurnWasAgent && !tooManyAgentTurns && waitingForUserRef.current && !agentSpeakingRef.current;
+                  const shouldRespond = !lastTurnWasAgent && !tooManyAgentTurns && waitingForUserRef.current && !agentSpeakingRef.current;
                   
                   console.log("[AI] Response check:", { 
                     lastTurnRole: lastTurn?.role, 
-                    isDuplicate, 
                     lastTurnWasAgent, 
                     tooManyAgentTurns, 
                     waitingForUser: waitingForUserRef.current,
@@ -646,6 +641,45 @@ async function endLiveKitCall() {
                   if (shouldRespond) {
                     // Set flag to false since AI is now responding
                     waitingForUserRef.current = false;
+                    
+                    // Generate AI response based on mode
+                    let reply: string;
+                    if (isMock) {
+                      // Use mock agent in mock mode
+                      reply = getAgentReply(historyRef.current, currentScenario);
+                      console.log("[AI] Generated mock reply:", reply);
+                    } else {
+                      // Use real AI in live mode
+                      try {
+                        console.log("[AI] Calling OpenAI API for live response");
+                        const messages = historyRef.current.map(turn => ({
+                          role: turn.role,
+                          text: turn.text
+                        }));
+                        
+                        const response = await fetch("/api/chat", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ 
+                            messages,
+                            scenario: currentScenario
+                          })
+                        });
+                        
+                        if (response.ok) {
+                          const data = await response.json();
+                          reply = data.content || "I didn't catch that. Could you please repeat?";
+                          console.log("[AI] Generated live AI reply:", reply);
+                        } else {
+                          console.warn("[AI] OpenAI API failed, falling back to mock");
+                          reply = getAgentReply(historyRef.current, currentScenario);
+                        }
+                      } catch (error) {
+                        console.warn("[AI] OpenAI API error, falling back to mock:", error);
+                        reply = getAgentReply(historyRef.current, currentScenario);
+                      }
+                    }
+                    
                     // Start per-turn agent recorder as soon as we have remote track
                     if (!agentRecRef.current && agentTrackRef.current) {
                       try {
