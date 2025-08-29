@@ -694,14 +694,22 @@ async function endLiveKitCall() {
                       } catch {}
                     }
                     
-                    // Real TTS pipeline: call /api/tts (stub returns seeded URL)
+                    // Real TTS pipeline: call /api/tts for both mock and live modes
                     const useTtsStub = isMock || !voiceConnectedRef.current;
                     let aurl: string | null = null;
-                    if (useTtsStub) {
-                      try {
-                        const r = await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: reply }) });
-                        if (r.ok) { const j = await r.json(); aurl = j?.url ?? null; }
-                      } catch {}
+                    
+                    // Always try to get TTS audio for the AI response
+                    try {
+                      const r = await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: reply }) });
+                      if (r.ok) { 
+                        const j = await r.json(); 
+                        aurl = j?.url ?? null;
+                        console.log("[TTS] Generated audio for AI response:", aurl);
+                      } else {
+                        console.warn("[TTS] Failed to generate audio, status:", r.status);
+                      }
+                    } catch (e) {
+                      console.warn("[TTS] Error generating audio:", e);
                     }
                     
                     // Stop agent recorder and prefer per-turn object URL over stub
@@ -719,7 +727,7 @@ async function endLiveKitCall() {
                       console.log("[Turn:assistant]", { text: reply.slice(0,40), audioUrl: aurl });
                       
                       // Play the AI response during the live call
-                      if (useTtsStub && aurl) {
+                      if (aurl) {
                         try {
                           // Completely stop speech recognition while AI speaks
                           if (speechRef.current) {
