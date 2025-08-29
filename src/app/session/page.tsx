@@ -129,7 +129,7 @@ function SessionInner() {
   const aiPlayingRef = useRef<boolean>(false);
   const ttsPlayingRef = useRef<boolean>(false);
   const bargeEnabledRef = useRef<boolean>(false);
-  const bargeActiveRef = useRef<boolean>(false);
+  const bargeActiveRef = useRef<boolean>(false); 
   
   // Assistant deduplication
   const recentAssistantTexts = useRef<Map<string, number>>(new Map()); // normalized text -> timestamp
