@@ -19,7 +19,7 @@ import { Room } from "livekit-client";
 import type { MessageRequest, MessageResponse } from "@/lib/messageDispatcher";
 
 // Helper function to connect LiveKit with existing mic track
-async function connectToLiveKitWithMicTrack(room: Room, micTrack: MediaStreamTrack): Promise<any> {
+async function connectToLiveKitWithMicTrack(room: Room, micTrack: MediaStreamTrack): Promise<import('livekit-client').LocalTrackPublication | undefined> {
   try {
     // Publish the existing mic track directly to LiveKit
     const publication = await room.localParticipant.publishTrack(micTrack);
@@ -79,12 +79,12 @@ function SessionInner() {
           // Unmute dispatcher so next user speech can be sent
           setMuted(false);
         },
-        onTTSStart: (text) => {
-          logInfo(`[Session] TTS started: "${text}"`);
+        onTTSStart: () => {
+          logInfo(`[Session] TTS started`);
           // Mute dispatcher during TTS to prevent false triggers
           setMuted(true);
         },
-        onTTSEnd: (text) => {
+        onTTSEnd: () => {
           logInfo(`[TTS] end ${Date.now()}`);
           // Unmute dispatcher when TTS ends naturally
           setMuted(false);
