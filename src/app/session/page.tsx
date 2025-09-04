@@ -231,9 +231,10 @@ function SessionInner() {
       // Fix mic race - don't join LiveKit until a real mic track exists
       const micTrack = await unifiedPipeline.current.ensureMicTrack();
       if (!micTrack) {
-        console.error('[Session] No mic track after ensureMicTrack');
+        logError('[Session] No mic track after ensureMicTrack');
         return;
       }
+      logInfo('[Session] Mic track ready', { id: micTrack.id || micTrack.getSettings?.()?.deviceId });
       
       // Get mic stream for UI
       const stream = unifiedPipeline.current.getMicStream();
@@ -243,6 +244,10 @@ function SessionInner() {
       if (!isMock) {
         await connectToLiveKit(micTrack);
       }
+      
+      // Connect message dispatcher after successful LiveKit connection (or if mock mode)
+      connectMessageDispatcher();
+      logInfo("[Session] Message dispatcher connected");
       
       // Start speech recognition (only if call hasn't ended)
       if (unifiedPipeline.current && !callEndedRef.current) {
@@ -274,7 +279,19 @@ function SessionInner() {
           try {
             logInfo("[Session] Starting TTS for greeting...");
             const greetingTurnId = greetingTurn.id;
-            await unifiedPipeline.current.playTTS(greeting, greetingTurnId);
+            
+            // Wrap TTS with mute gating and guarantee unmute and restart recognition
+            setMuted(true);
+            try {
+              await unifiedPipeline.current.playTTS(greeting, greetingTurnId);
+            } finally {
+              setMuted(false);
+              // Restart recognition after greeting finishes
+              if (unifiedPipeline.current) {
+                unifiedPipeline.current.startSpeech();
+              }
+            }
+            
             logInfo("[Session] Greeting TTS completed");
           } catch (error) {
             logError(`[Session] Greeting TTS failed:`, error);
@@ -294,6 +311,11 @@ function SessionInner() {
   };
   
   const connectToLiveKit = async (micTrack: MediaStreamTrack) => {
+    // Add guard at the very top of LiveKit connect that throws a clear error if micTrack is missing
+    if (!micTrack) {
+      throw new Error('No mic track available for LiveKit');
+    }
+    
     try {
       // Create LiveKit room
       livekitRoom.current = new Room();
@@ -330,10 +352,6 @@ function SessionInner() {
       }
       
       logInfo("[Session] Connected to LiveKit room");
-      
-      // Connect message dispatcher after successful LiveKit connection
-      connectMessageDispatcher();
-      logInfo("[Session] Message dispatcher connected");
       
     } catch (error) {
       logError("[Session] Failed to connect to LiveKit:", error);
@@ -514,6 +532,15 @@ function SessionInner() {
                 <div>Last ASR: {lastASRText || "None"}</div>
                 <div>Mute State: {currentMuteState ? "Muted" : "Unmuted"}</div>
                 <div>Mic RMS: {micRMS.toFixed(3)}</div>
+                
+                {/* Dev HUD for troubleshooting latency */}
+                <div className="mt-2 pt-2 border-t border-blue-300">
+                  <div className="font-medium text-blue-900">Dev HUD:</div>
+                  <div>Mic: {unifiedPipeline.current?.isMicReady() ? "ready" : "not-ready"}</div>
+                  <div>Dispatcher: {isMuted() ? "connected" : "disconnected"}</div>
+                  <div>Muted: {currentMuteState ? "true" : "false"}</div>
+                  <div>Room: {livekitRoom.current?.state === 'connected' ? "connected" : "not"}</div>
+                </div>
               </div>
             </div>
           </div>

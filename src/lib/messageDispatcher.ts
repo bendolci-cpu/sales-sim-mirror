@@ -104,7 +104,7 @@ class MessageDispatcher {
 
     // Check if muted - drop message if muted as specified in requirements
     if (muted) {
-      logInfo('[MessageDispatcher] Message dropped due to mute state');
+      logInfo('[MessageDispatcher] Message dropped due to mute state', { queueLength: this.messageQueue.length });
       return null;
     }
 

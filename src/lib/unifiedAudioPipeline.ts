@@ -56,8 +56,14 @@ export class UnifiedAudioPipeline {
       return this._micTrack;
     }
 
-    // Otherwise await navigator.mediaDevices.getUserMedia({ audio: true })
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // Otherwise await navigator.mediaDevices.getUserMedia with proper audio constraints
+    const stream = await navigator.mediaDevices.getUserMedia({ 
+      audio: { 
+        echoCancellation: true, 
+        noiseSuppression: true, 
+        autoGainControl: false 
+      } 
+    });
     const track = stream.getAudioTracks()[0];
     
     if (!track) {
@@ -83,11 +89,21 @@ export class UnifiedAudioPipeline {
       logInfo('[UnifiedAudio] Mic track ended, cleared from cache');
     });
 
+    // Log device information
+    const deviceId = track.getSettings?.()?.deviceId;
+    const label = track.label;
+    logInfo('[UnifiedAudio] Mic track created', { deviceId, label });
+
     return track;
   }
 
   getMicTrack(): MediaStreamTrack | null {
     return this._micTrack;
+  }
+
+  // Add synchronous method to check if mic is ready
+  isMicReady(): boolean {
+    return !!(this._micTrack && this.micAnalyzer);
   }
 
   async initialize(): Promise<void> {
@@ -303,17 +319,17 @@ export class UnifiedAudioPipeline {
   private startBargeInMonitoring(): void {
     if (this.bargeInMonitoring) return;
 
+    // Check if mic is ready before starting barge-in monitoring
+    if (!this.isMicReady()) {
+      logInfo('[UnifiedAudio] Mic not ready, skipping barge-in monitoring');
+      return;
+    }
+
     // Check if we're in client TTS mode
     const isClientTTSMode = process.env.NEXT_PUBLIC_TTS_MODE === 'client';
 
     if (isClientTTSMode) {
       // In client TTS mode, only monitor mic analyzer (no AI analyzer)
-      if (!this.micAnalyzer) {
-        // Schedule a retry with setTimeout instead of warning
-        setTimeout(() => this.startBargeInMonitoring(), 50);
-        return;
-      }
-
       this.bargeInMonitoring = true;
       logInfo('[UnifiedAudio] BARGE_MONITORING_START mic:true ai:false (client TTS mode)');
       logDebug('[UnifiedAudio] Starting barge-in monitoring (client TTS mode)');
@@ -323,9 +339,8 @@ export class UnifiedAudioPipeline {
       }, this.BARGE_IN_CHECK_INTERVAL);
     } else {
       // In server TTS mode, require BOTH mic analyser and aiAnalyser
-      if (!this.micAnalyzer || !this.aiAnalyser) {
-        // Schedule a retry with setTimeout instead of warning
-        setTimeout(() => this.startBargeInMonitoring(), 50);
+      if (!this.aiAnalyser) {
+        logInfo('[UnifiedAudio] AI analyzer not ready, skipping barge-in monitoring');
         return;
       }
 
