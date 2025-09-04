@@ -50,9 +50,11 @@ export default function BudgetBadge() {
   const max = data?.max ?? 0;
   const allowed = data?.allowed ?? true;
 
-  // Debug logging
-  console.log('[BudgetBadge] Data:', data);
-  console.log('[BudgetBadge] Usage:', usage, 'Max:', max, 'Allowed:', allowed);
+  // Debug logging (only in development)
+  if (process.env.NODE_ENV === 'development') {
+    console.log('[BudgetBadge] Data:', data);
+    console.log('[BudgetBadge] Usage:', usage, 'Max:', max, 'Allowed:', allowed);
+  }
 
   return (
     <div

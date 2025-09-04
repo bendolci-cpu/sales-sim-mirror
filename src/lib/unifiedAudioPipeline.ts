@@ -41,6 +41,7 @@ export class UnifiedAudioPipeline {
   private ttsStartTime: number = 0;
   private bargeInStableCount: number = 0;
   private lastBargeInCheck: number = 0;
+  private lastRmsLogTime: number = 0;
   
   // Constants
   private readonly MIC_THRESHOLD = 0.1;
@@ -328,22 +329,13 @@ export class UnifiedAudioPipeline {
       utterance.onend = () => {
         logInfo(`[TTS] end ${Date.now()}`);
         logInfo('[UnifiedAudio] TTS finished');
-        this.stopBargeInMonitoring();
-        this.speech?.setTTSPlaying(false);
-        this.speech?.startQuietGate();
-        this.config.onTTSEnd?.(turnId);
-        this.restartSpeechRecognition();
+        // Only resolve - let the finally block in playTTS handle side-effects
         resolve();
       };
       
       utterance.onerror = (event: SpeechSynthesisErrorEvent) => {
         logError('[UnifiedAudio] Client TTS error:', event);
-        this.stopBargeInMonitoring();
-        this.speech?.setTTSPlaying(false);
-        this.speech?.startQuietGate();
-        this.config.onTTSEnd?.(turnId);
-        this.restartSpeechRecognition();
-        this.config.onTTSError?.(new Error(`Client TTS error: ${event.error}`));
+        // Only reject with error - let the finally block in playTTS handle side-effects
         reject(new Error(`Client TTS error: ${event.error}`));
       };
 
@@ -398,14 +390,9 @@ export class UnifiedAudioPipeline {
     const isClientTTSMode = process.env.NEXT_PUBLIC_TTS_MODE === 'client';
 
     if (isClientTTSMode) {
-      // In client TTS mode, only monitor mic analyzer (no AI analyzer)
-      this.bargeInMonitoring = true;
-      logInfo('[UnifiedAudio] BARGE_MONITORING_START mic:true ai:false (client TTS mode)');
-      logDebug('[UnifiedAudio] Starting barge-in monitoring (client TTS mode)');
-
-      this.bargeInInterval = setInterval(() => {
-        this.checkBargeInClientMode();
-      }, this.BARGE_IN_CHECK_INTERVAL);
+      // In client TTS mode, skip barge-in entirely - no AI analyzer, mic-only barge-in immediately cancels TTS
+      logInfo('[UnifiedAudio] Skipping barge-in monitoring in client TTS mode');
+      return;
     } else {
       // In server TTS mode, require BOTH mic analyser and aiAnalyser
       if (!this.aiAnalyser) {
@@ -523,9 +510,11 @@ export class UnifiedAudioPipeline {
     if (!this.micAnalyzer) return 0;
     const rms = this.rms(this.micAnalyzer);
     
-    // Log when RMS > 0 (indicating mic input)
-    if (rms > 0) {
+    // Throttle RMS > 0 logs to ~5/sec to reduce noise
+    const now = Date.now();
+    if (rms > 0 && (!this.lastRmsLogTime || now - this.lastRmsLogTime > 200)) {
       logInfo('[UnifiedAudio] Analyzer RMS > 0:', { rms: rms.toFixed(3) });
+      this.lastRmsLogTime = now;
     }
     
     return rms;
@@ -704,9 +693,7 @@ export class UnifiedAudioPipeline {
       
       // Ensure AudioContext is ready
       if (!this.audioContext) {
-        this.audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)({ 
-          sampleRate: 24000 
-        });
+        this.audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
       }
       
       if (this.audioContext.state === 'suspended') {
@@ -743,6 +730,7 @@ export class UnifiedAudioPipeline {
 
   private restartSpeechRecognition(): void {
     if (this.speech) {
+      // Let the enhanced speech guard prevent duplicates
       this.speech.start();
     }
   }

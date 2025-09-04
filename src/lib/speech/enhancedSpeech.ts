@@ -62,6 +62,8 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
   // Single recognizer instance kept warm
   let rec: any = null;
   let active = false;
+  let starting = false;
+  let stoppedByApp = false;
   let endedExternally = false;
   let restartCooldown = false;
   let restartCooldownTimer: NodeJS.Timeout | null = null;
@@ -104,31 +106,36 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
     logInfo('[EnhancedSpeech] Created recognizer instance');
   }
   
-  // Start recognition (only if not already active)
+  // Start recognition (only if not already active or starting)
   async function startRecognition() {
-    if (active || restartCooldown) {
-      logDebug('[EnhancedSpeech] Recognition already active or in cooldown');
+    if (active || starting || restartCooldown) {
+      logDebug('[EnhancedSpeech] Recognition already active, starting, or in cooldown');
       return;
     }
+    
+    starting = true;
     
     try {
       createRecognizer();
       
       rec.onstart = () => {
         active = true;
+        starting = false;
         endedExternally = false;
+        stoppedByApp = false;
         logInfo('[EnhancedSpeech] Recognition started');
       };
       
       rec.onend = () => {
         active = false;
+        starting = false;
         logInfo('[EnhancedSpeech] Recognition ended');
         
         // Only restart if not ended externally and not in cooldown
-        if (!endedExternally && !restartCooldown) {
-          logInfo('[EnhancedSpeech] Restarting recognition');
+        if (!endedExternally && !restartCooldown && !stoppedByApp) {
+          logInfo('[EnhancedSpeech] Auto-restarting recognition');
           setTimeout(() => {
-            if (!endedExternally && !restartCooldown) {
+            if (!endedExternally && !restartCooldown && !stoppedByApp) {
               startRecognition();
             }
           }, 100);
@@ -136,10 +143,15 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
       };
       
       rec.onerror = (event: any) => {
+        starting = false;
+        
         // Handle specific errors
         if (event.error === 'aborted') {
           // Don't restart immediately on abort - let onend handle it
           logInfo('[EnhancedSpeech] Recognition aborted - will restart if needed');
+        } else if (event.error === 'InvalidStateError') {
+          // Ignore InvalidStateError - recognition is already in the desired state
+          logDebug('[EnhancedSpeech] Ignoring InvalidStateError - recognition already in desired state');
         } else {
           // Log other errors as warnings
           logWarn(`[EnhancedSpeech] Recognition error: ${event.error}`);
@@ -177,9 +189,20 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
         processFinalResult(transcript, confidence);
       };
       
-      rec.start();
+      try {
+        rec.start();
+      } catch (error: any) {
+        starting = false;
+        if (error.name === 'InvalidStateError') {
+          // Ignore InvalidStateError - recognition is already in the desired state
+          logDebug('[EnhancedSpeech] Ignoring InvalidStateError - recognition already in desired state');
+        } else {
+          throw error;
+        }
+      }
       
     } catch (error) {
+      starting = false;
       logError('[EnhancedSpeech] Failed to start recognition:', error);
       setRestartCooldown(500);
     }
@@ -324,6 +347,7 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
   // Stop recognition
   function stopRecognition() {
     endedExternally = true;
+    stoppedByApp = true;
     
     if (rec && active) {
       try {
