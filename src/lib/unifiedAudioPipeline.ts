@@ -17,7 +17,7 @@ export interface UnifiedAudioPipelineConfig {
 export class UnifiedAudioPipeline {
   private audioContext: AudioContext | null = null;
   private micStream: MediaStream | null = null;
-  private micTrack: MediaStreamTrack | null = null;
+  private _micTrack: MediaStreamTrack | null = null;
   private micSource: MediaStreamAudioSourceNode | null = null;
   private micAnalyzer: AnalyserNode | null = null;
   private aiSource: MediaElementAudioSourceNode | null = null;
@@ -49,8 +49,49 @@ export class UnifiedAudioPipeline {
     this.config = config;
   }
 
+  // Export two functions as specified
+  async ensureMicTrack(): Promise<MediaStreamTrack> {
+    // If a cached _micTrack exists and readyState === 'live', resolve it
+    if (this._micTrack && this._micTrack.readyState === 'live') {
+      return this._micTrack;
+    }
+
+    // Otherwise await navigator.mediaDevices.getUserMedia({ audio: true })
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const track = stream.getAudioTracks()[0];
+    
+    if (!track) {
+      throw new Error('No audio track found in microphone stream');
+    }
+
+    // Store in _micTrack
+    this._micTrack = track;
+    
+    // Create/attach the micAnalyser if not already created
+    if (this.audioContext && !this.micAnalyzer) {
+      this.micSource = this.audioContext.createMediaStreamSource(stream);
+      this.micAnalyzer = this.audioContext.createAnalyser();
+      this.micAnalyzer.fftSize = 256;
+      this.micAnalyzer.smoothingTimeConstant = 0.8;
+      this.micSource.connect(this.micAnalyzer);
+      logInfo('[UnifiedAudio] Microphone analyzer ready');
+    }
+
+    // Add an ended listener that clears _micTrack so we can re-request if the device changes
+    track.addEventListener('ended', () => {
+      this._micTrack = null;
+      logInfo('[UnifiedAudio] Mic track ended, cleared from cache');
+    });
+
+    return track;
+  }
+
+  getMicTrack(): MediaStreamTrack | null {
+    return this._micTrack;
+  }
+
   async initialize(): Promise<void> {
-    if (this.isInitialized || this.isCleaningUp) {
+    if (this._isInitialized || this.isCleaningUp) {
       return;
     }
 
@@ -86,32 +127,13 @@ export class UnifiedAudioPipeline {
         this.ttsEl.addEventListener("error", (e) => {
           console.error("[UnifiedAudio] TTS element error", e);
         });
+
+        // Bind TTS event handlers as specified
+        this.ttsEl.onplay = () => console.info('[TTS] start', Date.now());
+        this.ttsEl.onended = () => console.info('[TTS] end', Date.now());
+        this.ttsEl.onpause = () => console.info('[TTS] pause', Date.now());
+
         logInfo('[UnifiedAudio] TTS audio element created');
-      }
-
-      // Get microphone access
-      this.micStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          sampleRate: 24000,
-          channelCount: 1
-        }
-      });
-
-      this.micTrack = this.micStream.getAudioTracks()[0];
-      if (!this.micTrack) {
-        throw new Error('No audio track found in microphone stream');
-      }
-
-      // Setup microphone analyzer
-      if (this.audioContext && this.micTrack) {
-        this.micSource = this.audioContext.createMediaStreamSource(this.micStream);
-        this.micAnalyzer = this.audioContext.createAnalyser();
-        this.micAnalyzer.fftSize = 256;
-        this.micAnalyzer.smoothingTimeConstant = 0.8;
-        this.micSource.connect(this.micAnalyzer);
-        logInfo('[UnifiedAudio] Microphone analyzer ready');
       }
 
       // Initialize speech recognition
@@ -130,9 +152,9 @@ export class UnifiedAudioPipeline {
       this._isInitialized = true;
       logInfo('[UnifiedAudio] Pipeline initialized successfully');
 
-      // Notify mic track is ready
-      if (this.config.onMicTrackReady && this.micTrack) {
-        this.config.onMicTrackReady(this.micTrack);
+      // Notify mic track is ready if we have one
+      if (this.config.onMicTrackReady && this._micTrack) {
+        this.config.onMicTrackReady(this._micTrack);
       }
 
     } catch (error) {
@@ -236,7 +258,7 @@ export class UnifiedAudioPipeline {
       };
       
       utterance.onend = () => {
-        logInfo('[TTS] end ${Date.now()}');
+        logInfo(`[TTS] end ${Date.now()}`);
         this.stopBargeInMonitoring();
         resolve();
       };
@@ -287,7 +309,8 @@ export class UnifiedAudioPipeline {
     if (isClientTTSMode) {
       // In client TTS mode, only monitor mic analyzer (no AI analyzer)
       if (!this.micAnalyzer) {
-        logWarn('[UnifiedAudio] Mic analyzer not ready for barge-in monitoring');
+        // Schedule a retry with setTimeout instead of warning
+        setTimeout(() => this.startBargeInMonitoring(), 50);
         return;
       }
 
@@ -301,7 +324,8 @@ export class UnifiedAudioPipeline {
     } else {
       // In server TTS mode, require BOTH mic analyser and aiAnalyser
       if (!this.micAnalyzer || !this.aiAnalyser) {
-        logWarn('[UnifiedAudio] Analyzers not ready for barge-in monitoring - mic:', !!this.micAnalyzer, 'ai:', !!this.aiAnalyser);
+        // Schedule a retry with setTimeout instead of warning
+        setTimeout(() => this.startBargeInMonitoring(), 50);
         return;
       }
 
@@ -353,8 +377,9 @@ export class UnifiedAudioPipeline {
         const dt = now - this.ttsStartTime;
         logInfo(`[BARGE-IN] micPower:${micPower.toFixed(3)}, aiPower:${aiPower.toFixed(3)}, dt:${dt}ms`);
         
-        // Stop TTS and trigger barge-in
-        this.stopTTS();
+        // On trigger: pause ttsEl and stop the monitor loop — do not tear down the whole audio pipeline or stop recognition
+        this.ttsEl?.pause();
+        this.stopBargeInMonitoring();
         this.config.onBargeIn?.();
       }
     } else {
@@ -392,6 +417,12 @@ export class UnifiedAudioPipeline {
     return Math.sqrt(sum / dataArray.length) / 255;
   }
 
+  // Public method to get current mic RMS for debug overlay
+  getMicRMS(): number {
+    if (!this.micAnalyzer) return 0;
+    return this.rms(this.micAnalyzer);
+  }
+
   private startHealthMonitoring(): void {
     if (this.healthInterval) {
       clearInterval(this.healthInterval);
@@ -401,7 +432,7 @@ export class UnifiedAudioPipeline {
       const health = {
         audioContext: this.audioContext?.state || 'null',
         micStream: !!this.micStream,
-        micTrack: !!this.micTrack,
+        micTrack: !!this._micTrack,
         ttsPlaying: !!this.ttsEl?.src && !this.ttsEl?.paused,
         bargeInMonitoring: this.bargeInMonitoring
       };
@@ -462,7 +493,7 @@ export class UnifiedAudioPipeline {
     // Clear analyzers but keep the context
     this.micAnalyzer = null;
     this.micSource = null;
-    this.micTrack = null;
+    this._micTrack = null;
 
     this._isInitialized = false;
     this.isCleaningUp = false;
@@ -497,10 +528,6 @@ export class UnifiedAudioPipeline {
 
   getMicStream(): MediaStream | null {
     return this.micStream;
-  }
-
-  getMicTrack(): MediaStreamTrack | null {
-    return this.micTrack;
   }
 
   isInitialized(): boolean {

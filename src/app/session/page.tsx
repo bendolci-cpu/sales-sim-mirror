@@ -13,7 +13,7 @@ import CallBar from "@/components/CallBar";
 import DebugToggle from "@/components/DebugToggle";
 import AudioDeviceSelector from "@/components/AudioDeviceSelector";
 import { logInfo, logError } from "@/lib/logger";
-import { registerMessageHandler, unregisterMessageHandler, connectMessageDispatcher, disconnectMessageDispatcher, setMuted } from "@/lib/messageDispatcher";
+import { registerMessageHandler, unregisterMessageHandler, connectMessageDispatcher, disconnectMessageDispatcher, setMuted, isMuted } from "@/lib/messageDispatcher";
 import { getUnifiedAudioPipeline, cleanupUnifiedAudioPipeline } from "@/lib/unifiedAudioPipeline";
 import { Room } from "livekit-client";
 import type { MessageRequest, MessageResponse } from "@/lib/messageDispatcher";
@@ -60,6 +60,11 @@ function SessionInner() {
   const [micTrack, setMicTrack] = useState<MediaStreamTrack | null>(null);
   const [publishedTrackId, setPublishedTrackId] = useState<string | null>(null);
   
+  // Debug overlay state
+  const [lastASRText, setLastASRText] = useState<string>("");
+  const [currentMuteState, setCurrentMuteState] = useState<boolean>(false);
+  const [micRMS, setMicRMS] = useState<number>(0);
+  
   // Refs
   const unifiedPipeline = useRef<ReturnType<typeof getUnifiedAudioPipeline> | null>(null);
   const livekitRoom = useRef<Room | null>(null);
@@ -95,6 +100,7 @@ function SessionInner() {
         },
         onFinalResult: (text) => {
           logInfo(`[ASR] final ${text} ${Date.now()}`);
+          setLastASRText(text);
           // Handle speech recognition results here
         },
         onError: (error) => {
@@ -104,6 +110,18 @@ function SessionInner() {
     }
   }, []);
   
+  // Debug overlay polling
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (unifiedPipeline.current) {
+        setMicRMS(unifiedPipeline.current.getMicRMS());
+      }
+      setCurrentMuteState(isMuted());
+    }, 200);
+
+    return () => clearInterval(interval);
+  }, []);
+
   // === MESSAGE DISPATCHER HANDLER ===
   
   const handleMessageDispatcher = async (request: MessageRequest): Promise<MessageResponse> => {
@@ -210,13 +228,20 @@ function SessionInner() {
       await unifiedPipeline.current.initialize();
       logInfo("[Session] Unified pipeline initialized successfully");
       
+      // Fix mic race - don't join LiveKit until a real mic track exists
+      const micTrack = await unifiedPipeline.current.ensureMicTrack();
+      if (!micTrack) {
+        console.error('[Session] No mic track after ensureMicTrack');
+        return;
+      }
+      
       // Get mic stream for UI
       const stream = unifiedPipeline.current.getMicStream();
       setMicStream(stream);
       
       // Connect to LiveKit if not in mock mode
       if (!isMock) {
-        await connectToLiveKit();
+        await connectToLiveKit(micTrack);
       }
       
       // Start speech recognition (only if call hasn't ended)
@@ -268,14 +293,7 @@ function SessionInner() {
     }
   };
   
-  const connectToLiveKit = async () => {
-    // Get the mic track from the unified pipeline
-    const pipelineMicTrack = unifiedPipeline.current?.getMicTrack();
-    if (!pipelineMicTrack) {
-      logError("[Session] No mic track available for LiveKit");
-      return;
-    }
-    
+  const connectToLiveKit = async (micTrack: MediaStreamTrack) => {
     try {
       // Create LiveKit room
       livekitRoom.current = new Room();
@@ -301,14 +319,14 @@ function SessionInner() {
       await livekitRoom.current.connect(roomUrl, token);
       
       // Use the helper function to publish the pipeline's mic track
-      const publication = await connectToLiveKitWithMicTrack(livekitRoom.current, pipelineMicTrack);
+      const publication = await connectToLiveKitWithMicTrack(livekitRoom.current, micTrack);
       
       if (publication?.trackSid) {
         setPublishedTrackId(publication.trackSid);
         logInfo(`[Session] Published track: ${publication.trackSid}`);
         
         // Log track IDs for debugging - should be equal since we're using the same track
-        logInfo(`[Mic/Publish] ids {micTrackId: ${pipelineMicTrack.id}, publishedTrackId: ${publication.trackSid}, equal: ${pipelineMicTrack.id === publication.trackSid}}`);
+        logInfo(`[Mic/Publish] ids {micTrackId: ${micTrack.id}, publishedTrackId: ${publication.trackSid}, equal: ${micTrack.id === publication.trackSid}}`);
       }
       
       logInfo("[Session] Connected to LiveKit room");
@@ -337,17 +355,16 @@ function SessionInner() {
     // Stop speech recognition (only if call hasn't ended)
     if (unifiedPipeline.current && !callEndedRef.current) {
       unifiedPipeline.current.stopSpeech();
-      logInfo("[Session] Speech recognition stopped");
     }
     
     // Force cleanup unified pipeline (close AudioContext)
     if (unifiedPipeline.current) {
       unifiedPipeline.current.forceCleanup();
+      unifiedPipeline.current = null;
     }
     
-    // Disconnect message dispatcher after cleanup
+    // Disconnect message dispatcher
     disconnectMessageDispatcher();
-    logInfo("[Session] Message dispatcher disconnected");
     
     setVoiceConnected(false);
     setMicStream(null);
@@ -355,60 +372,50 @@ function SessionInner() {
     setPublishedTrackId(null);
     setTurns([]);
     setExternalTurn(null);
+    
     logInfo("[Session] Call ended");
   };
-  
+
   // === CHAT HANDLERS ===
-  
-  const handleChatUserUtterance = (text: string) => {
-    if (!voiceConnected) return;
+
+  const handleChatUserUtterance = async (text: string) => {
+    if (!unifiedPipeline.current) return;
     
-    logInfo(`[Session] Chat user utterance: "${text}"`);
-    
-    // Add user turn
-    const userTurn: Turn = {
-      id: crypto.randomUUID(),
-      role: "user",
+    const response = await handleMessageDispatcher({
       text,
-      timestamp: Date.now()
-    };
-    setTurns(prev => [...prev, userTurn]);
-    setExternalTurn({
-      role: "user",
-      text,
-      timestamp: userTurn.timestamp
+              metadata: {
+          source: 'text',
+          timestamp: Date.now()
+        }
     });
     
-    // Process through message dispatcher
-    handleMessageDispatcher({
-      text,
-      metadata: { 
-        source: "text",
-        timestamp: Date.now()
-      }
-    });
+    if (response?.success) {
+      logInfo(`[Session] Chat message processed: "${text}"`);
+    } else {
+      logError(`[Session] Chat message failed: "${text}"`);
+    }
   };
-  
-  // === LIFECYCLE ===
-  
+
+  // === EFFECTS ===
+
   useEffect(() => {
     // Register message handler
     registerMessageHandler(handleMessageDispatcher);
     
     return () => {
-      // Unregister message handler
       unregisterMessageHandler(handleMessageDispatcher);
-      
-      // Only cleanup pipeline if call is not active (HMR-safe)
-      if (!voiceConnected && unifiedPipeline.current) {
-        // Use regular cleanup for HMR - preserves AudioContext
+    };
+  }, []);
+
+  useEffect(() => {
+    // Cleanup on unmount
+    return () => {
+      if (unifiedPipeline.current) {
         unifiedPipeline.current.cleanup();
       }
     };
-  }, [voiceConnected]); // Include voiceConnected to access latest state
-  
-  // === RENDER ===
-  
+  }, []);
+
   if (!scenario) {
     return (
       <div className="flex h-screen items-center justify-center">
@@ -419,99 +426,96 @@ function SessionInner() {
       </div>
     );
   }
-  
+
   return (
     <main className="flex min-h-screen flex-col bg-gray-50">
       <div className="flex-1 p-6">
         <div className="mx-auto max-w-4xl">
+          
           {/* Header */}
           <div className="mb-8 flex items-center justify-between">
             <div>
               <h1 className="text-2xl font-bold text-gray-900">Sales Simulation</h1>
-              <p className="text-gray-600">
-                {scenario.title} • {mode} • {isMock ? "Mock" : "Live"} • {voiceConnected ? "Connected" : "Disconnected"}
-              </p>
+                              <p className="text-gray-600">
+                  {scenario.title} • {scenario.persona}
+                </p>
             </div>
-            
             <div className="flex items-center gap-4">
               <BudgetBadge />
               <DebugToggle />
-              
-              {/* Mock/Live Toggle */}
               <button
                 onClick={async () => {
-                  if (isToggling) return;
-                  setIsToggling(true);
-                  
-                  const newMockValue = !isMock;
-                  
-                  // Update URL to persist the change
-                  const params = new URLSearchParams(searchParams.toString());
-                  params.set("mock", newMockValue ? "1" : "0");
-                  router.replace(`${pathname}?${params.toString()}`, { scroll: false });
-                  
-                  logInfo(`[Session] Switching from ${isMock ? 'mock' : 'live'} to ${newMockValue ? 'mock' : 'live'} mode`);
-                  setIsToggling(false);
+                  if (voiceConnected) {
+                    handleEnd();
+                  } else {
+                    await handleCall();
+                  }
                 }}
-                disabled={isToggling}
-                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                  isToggling
-                    ? "bg-gray-100 text-gray-400 cursor-not-allowed"
-                    : isMock
-                    ? "bg-blue-100 text-blue-700 hover:bg-blue-200"
-                    : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                }`}
+                disabled={isInitializing}
+                className={`rounded-lg px-4 py-2 font-medium text-white transition-colors ${
+                  voiceConnected
+                    ? 'bg-red-600 hover:bg-red-700'
+                    : 'bg-blue-600 hover:bg-blue-700'
+                } disabled:opacity-50`}
               >
-                {isToggling ? "Switching..." : `Mock: ${isMock ? "On" : "Off"}`}
+                {isInitializing
+                  ? 'Initializing...'
+                  : voiceConnected
+                  ? 'End Call'
+                  : `Start ${mode === 'practice' ? 'Practice' : 'Challenge'} Session`}
               </button>
             </div>
           </div>
-          
+
           {/* Scenario Picker */}
           <div className="mb-6">
             <ScenarioPicker onChange={() => {}} />
           </div>
 
+          {/* Main Content */}
           <div className="flex flex-col gap-6">
             <CallBar
               state={voiceConnected ? "connected" : "idle"}
               onCall={handleCall}
               onEnd={handleEnd}
-              stream={micStream}
               isInitializing={isInitializing}
             />
-
+            
+            {/* Chat Window */}
             {showChat && (
               <div className="rounded-lg border border-gray-200 bg-white p-4">
                 <ChatWindowClient
                   visible={showChat}
-                  isMock={isMock}
-                  voiceConnected={voiceConnected}
-                  callActive={voiceConnected}
                   externalTurn={externalTurn}
                   onUserUtterance={handleChatUserUtterance}
                 />
               </div>
             )}
 
-            {/* Audio Device Settings */}
-            {showChat && (
-              <AudioDeviceSelector />
-            )}
+            {/* Audio Device Selector */}
+            <AudioDeviceSelector />
 
             {/* Pipeline Status */}
-            {voiceConnected && unifiedPipeline.current && (
-              <div className="rounded-lg border border-green-200 bg-green-50 p-4">
-                <h3 className="text-sm font-medium text-green-900 mb-2">Pipeline Status</h3>
-                <div className="text-sm text-green-800 space-y-1">
-                  <div>TTS: {unifiedPipeline.current.isTTSPlaying() ? "Playing" : "Idle"}</div>
-                  <div>Current Turn: {unifiedPipeline.current.getCurrentTurnId() || "None"}</div>
-                  <div>Turns: {turns.length}</div>
-                  <div>Mic Track: {micTrack?.id || "None"}</div>
-                  <div>Published Track: {publishedTrackId || "None"}</div>
-                </div>
+            <div className="rounded-lg border border-green-200 bg-green-50 p-4">
+              <h3 className="text-sm font-medium text-green-900 mb-2">Pipeline Status</h3>
+              <div className="text-sm text-green-800 space-y-1">
+                <div>TTS: {unifiedPipeline.current?.isTTSPlaying() ? "Playing" : "Idle"}</div>
+                <div>Current Turn: {unifiedPipeline.current?.getCurrentTurnId() || "None"}</div>
+                <div>Turns: {turns.length}</div>
+                <div>Mic Track: {micTrack?.id || "None"}</div>
+                <div>Published Track: {publishedTrackId || "None"}</div>
               </div>
-            )}
+            </div>
+
+            {/* Debug Overlay */}
+            <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+              <h3 className="text-sm font-medium text-blue-900 mb-2">Debug Overlay</h3>
+              <div className="text-sm text-blue-800 space-y-1">
+                <div>Last ASR: {lastASRText || "None"}</div>
+                <div>Mute State: {currentMuteState ? "Muted" : "Unmuted"}</div>
+                <div>Mic RMS: {micRMS.toFixed(3)}</div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
