@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 
 type BudgetResp = {
   usage: number;
@@ -21,40 +21,72 @@ function formatCurrency(amount: number): string {
 
 export default function BudgetBadge() {
   const [data, setData] = useState<BudgetResp | null>(null);
+  const [lastLogTime, setLastLogTime] = useState(0);
+  const prevDataRef = useRef<BudgetResp | null>(null);
+  
+  // Check if debug logging is enabled
+  const isDebugEnabled = process.env.NODE_ENV === 'development' && 
+    process.env.NEXT_PUBLIC_DEBUG_BUDGET === 'true';
 
+  // Memoized fetch function to prevent recreation on every render
+  const fetchBudget = useCallback(async () => {
+    try {
+      const res = await fetch("/api/budget");
+      if (!res.ok) return;
+      const json = (await res.json()) as BudgetResp;
+      setData(json);
+    } catch (error) {
+      // Silently handle errors to avoid console spam
+    }
+  }, []);
+
+  // Debug logging that only fires when values actually change
+  useEffect(() => {
+    if (!isDebugEnabled || !data) return;
+    
+    const now = Date.now();
+    const hasChanged = !prevDataRef.current || 
+      prevDataRef.current.usage !== data.usage ||
+      prevDataRef.current.remaining !== data.remaining ||
+      prevDataRef.current.allowed !== data.allowed;
+    
+    // Only log if data changed and we haven't logged recently (throttle to 2 seconds)
+    if (hasChanged && (now - lastLogTime > 2000)) {
+      console.log('[BudgetBadge] Data updated:', {
+        usage: data.usage,
+        remaining: data.remaining,
+        allowed: data.allowed,
+        max: data.max
+      });
+      setLastLogTime(now);
+      prevDataRef.current = data;
+    }
+  }, [data, isDebugEnabled, lastLogTime]);
+
+  // Set up polling once on mount with proper cleanup
   useEffect(() => {
     let cancelled = false;
     
-    const fetchBudget = async () => {
-      try {
-        const res = await fetch("/api/budget");
-        if (!res.ok) return;
-        const json = (await res.json()) as BudgetResp;
-        if (!cancelled) setData(json);
-      } catch {}
-    };
-
     // Initial fetch
     fetchBudget();
 
-    // Set up polling for real-time updates
-    const interval = setInterval(fetchBudget, 5000); // Update every 5 seconds
+    // Set up polling for real-time updates (30 seconds as suggested)
+    const interval = setInterval(() => {
+      if (!cancelled) {
+        fetchBudget();
+      }
+    }, 30000);
 
+    // Cleanup function
     return () => {
       cancelled = true;
       clearInterval(interval);
     };
-  }, []);
+  }, [fetchBudget]); // Only depend on the memoized fetchBudget function
 
   const usage = data?.usage ?? 0;
   const max = data?.max ?? 0;
   const allowed = data?.allowed ?? true;
-
-  // Debug logging (only in development)
-  if (process.env.NODE_ENV === 'development') {
-    console.log('[BudgetBadge] Data:', data);
-    console.log('[BudgetBadge] Usage:', usage, 'Max:', max, 'Allowed:', allowed);
-  }
 
   return (
     <div
