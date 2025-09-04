@@ -161,7 +161,8 @@ function SessionInner() {
       // Play TTS if connected
       if (voiceConnected && !isMock && unifiedPipeline.current) {
         try {
-          await unifiedPipeline.current.playTTS(aiResponse, `/api/tts?text=${encodeURIComponent(aiResponse)}`);
+          const turnId = aiTurn.id;
+          await unifiedPipeline.current.playTTS(aiResponse, turnId);
         } catch (error) {
           logError(`[Session] TTS failed for turn ${aiTurn.id}:`, error);
         }
@@ -214,6 +215,12 @@ function SessionInner() {
       logInfo("[Session] Connecting message dispatcher...");
       setMessageDispatcherConnected(true);
       
+      // Start speech recognition
+      if (unifiedPipeline.current) {
+        unifiedPipeline.current.startSpeech();
+        logInfo("[Session] Speech recognition started");
+      }
+      
       setVoiceConnected(true);
       logInfo("[Session] Call started successfully");
       
@@ -237,7 +244,8 @@ function SessionInner() {
         if (!isMock) {
           try {
             logInfo("[Session] Starting TTS for greeting...");
-            await unifiedPipeline.current.playTTS(greeting, `/api/tts?text=${encodeURIComponent(greeting)}`);
+            const greetingTurnId = greetingTurn.id;
+            await unifiedPipeline.current.playTTS(greeting, greetingTurnId);
             logInfo("[Session] Greeting TTS completed");
           } catch (error) {
             logError(`[Session] Greeting TTS failed:`, error);
@@ -269,11 +277,7 @@ function SessionInner() {
       livekitRoom.current = new Room();
       
       // Fetch LiveKit token from our API
-      const res = await fetch("/api/livekit-token", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ roomName: "sales-sim", identity: "test-user" }),
-      });
+      const res = await fetch("/api/livekit-token?name=test-user&room=sales-sim");
       
       if (!res.ok) {
         throw new Error(`Token fetch failed: ${res.status}`);
@@ -322,6 +326,12 @@ function SessionInner() {
     
     // Disconnect message dispatcher
     setMessageDispatcherConnected(false);
+    
+    // Stop speech recognition
+    if (unifiedPipeline.current) {
+      unifiedPipeline.current.stopSpeech();
+      logInfo("[Session] Speech recognition stopped");
+    }
     
     // Force cleanup unified pipeline (close AudioContext)
     if (unifiedPipeline.current) {

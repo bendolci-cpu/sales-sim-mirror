@@ -2,7 +2,6 @@
 // Consolidates: AudioManager, LegacyAudioManager, BargeInDetector, ASRManager, TTSPlayer
 
 import { logInfo, logDebug, logWarn, logError } from './logger';
-import { sendMessage } from './messageDispatcher';
 import { createEnhancedSpeech, type EnhancedSpeechControls } from './speech/enhancedSpeech';
 
 export interface UnifiedAudioPipelineConfig {
@@ -11,8 +10,8 @@ export interface UnifiedAudioPipelineConfig {
   onTTSEnd?: (turnId: string) => void;
   onTTSError?: (error: Error) => void;
   onMicTrackReady?: (track: MediaStreamTrack) => void;
-  onFinalResult?: (text: string) => void; // Added for EnhancedSpeechRecognition
-  onError?: (error: Error) => void; // Added for EnhancedSpeechRecognition
+  onFinalResult?: (text: string, confidence?: number) => void;
+  onError?: (error: Error) => void;
 }
 
 export class UnifiedAudioPipeline {
@@ -25,7 +24,7 @@ export class UnifiedAudioPipeline {
   private aiAnalyser: AnalyserNode | null = null;
   private ttsAudioEl: HTMLAudioElement | null = null;
   private ttsAbortController: AbortController | null = null;
-  private speechRecognition: EnhancedSpeechRecognition | null = null;
+  private speech: EnhancedSpeechControls | null = null;
   private bargeInMonitoring: boolean = false;
   private bargeInInterval: NodeJS.Timeout | null = null;
   private bargeInTimer: NodeJS.Timeout | null = null;
@@ -48,7 +47,7 @@ export class UnifiedAudioPipeline {
       
       // Create AudioContext after user gesture (this should be called from a user action)
       if (!this.audioContext) {
-        this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ 
+        this.audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)({ 
           sampleRate: 24000 
         });
         logInfo('[UnifiedAudio] AudioContext created');
@@ -100,11 +99,15 @@ export class UnifiedAudioPipeline {
       }
 
       // Initialize speech recognition
-      this.speechRecognition = new EnhancedSpeechRecognition({
-        onFinalResult: this.config.onFinalResult,
+      this.speech = createEnhancedSpeech({
+        onFinal: (text: string) => this.config.onFinalResult?.(text),
         onBargeIn: this.config.onBargeIn,
         onError: this.config.onError
       });
+
+      if (!this.speech) {
+        throw new Error('Failed to create enhanced speech recognition');
+      }
 
       // Start health monitoring
       this.startHealthMonitoring();
@@ -123,7 +126,7 @@ export class UnifiedAudioPipeline {
     }
   }
 
-  async playTTS(text: string, urlOrEndpoint: string): Promise<void> {
+  async playTTS(text: string, turnId: string): Promise<void> {
     if (this.isCleaningUp) {
       logWarn('[UnifiedAudio] Cannot play TTS during cleanup');
       return;
@@ -133,25 +136,34 @@ export class UnifiedAudioPipeline {
     await this.initialize();
 
     // Stop any existing TTS
-    if (this.ttsAbortController) { 
-      try { 
-        this.stopTTS(); 
-      } catch {} 
-    }
+    this.stopTTS();
 
+    // Set new abort controller
     this.ttsAbortController = new AbortController();
     
     logInfo(`[UnifiedAudio] Starting TTS: "${text}"`);
-    this.config.onTTSStart?.(text);
+    this.config.onTTSStart?.(turnId);
+
+    // Start AI analyzer at TTS start
+    this.startBargeInMonitoring();
 
     try {
-      // Fetch the audio as ArrayBuffer
-      const res = await fetch(urlOrEndpoint, { 
+      // Check if we should use client TTS fallback
+      if (process.env.NEXT_PUBLIC_TTS_MODE === 'client' && typeof window !== 'undefined' && window.speechSynthesis) {
+        await this.playClientTTS(text);
+        return;
+      }
+
+      // Try server TTS
+      const res = await fetch(`/api/tts?text=${encodeURIComponent(text)}`, { 
         signal: this.ttsAbortController.signal 
       });
       
-      if (!res.ok) {
-        throw new Error(`TTS fetch failed: ${res.status}`);
+      if (!res.ok || res.status === 204) {
+        // Server TTS failed or returned no content, fall back to client
+        logWarn('[UnifiedAudio] Server TTS failed, falling back to client TTS');
+        await this.playClientTTS(text);
+        return;
       }
       
       const data = await res.arrayBuffer();
@@ -175,9 +187,6 @@ export class UnifiedAudioPipeline {
       this.ttsAudioEl!.src = objectUrl;
       await this.ttsAudioEl!.play();
       
-      // Start barge-in monitoring (require both mic and AI analyzers)
-      this.startBargeInMonitoring();
-
       logInfo(`[UnifiedAudio] TTS playing: "${text}"`);
 
     } catch (error) {
@@ -190,9 +199,42 @@ export class UnifiedAudioPipeline {
     }
   }
 
+  private async playClientTTS(text: string): Promise<void> {
+    if (typeof window === 'undefined' || !window.speechSynthesis) {
+      throw new Error('Client TTS not available');
+    }
+
+    return new Promise((resolve, reject) => {
+      const utterance = new SpeechSynthesisUtterance(text);
+      
+      utterance.onstart = () => {
+        logInfo('[UnifiedAudio] Client TTS started');
+      };
+      
+      utterance.onend = () => {
+        logInfo('[UnifiedAudio] Client TTS ended');
+        this.stopBargeInMonitoring();
+        resolve();
+      };
+      
+      utterance.onerror = (event: SpeechSynthesisErrorEvent) => {
+        logError('[UnifiedAudio] Client TTS error:', event);
+        this.config.onTTSError?.(new Error(`Client TTS error: ${event.error}`));
+        reject(new Error(`Client TTS error: ${event.error}`));
+      };
+
+      window.speechSynthesis.speak(utterance);
+    });
+  }
+
   stopTTS(): void {
-    const ctrl = this.ttsAbortController;
-    this.ttsAbortController = null;
+    // Never throw if no abort controller
+    if (this.ttsAbortController) {
+      try { 
+        this.ttsAbortController.abort(); 
+      } catch {}
+      this.ttsAbortController = null;
+    }
     
     try { 
       this.ttsAudioEl?.pause(); 
@@ -204,12 +246,6 @@ export class UnifiedAudioPipeline {
       if (this.ttsAudioEl.src && this.ttsAudioEl.src.startsWith('blob:')) {
         URL.revokeObjectURL(this.ttsAudioEl.src);
       }
-    }
-    
-    if (ctrl) { 
-      try { 
-        ctrl.abort(); 
-      } catch {} 
     }
 
     // Stop barge-in monitoring
@@ -320,9 +356,9 @@ export class UnifiedAudioPipeline {
     } catch {}
 
     // Stop speech recognition
-    if (this.speechRecognition) {
-      this.speechRecognition.stop();
-      this.speechRecognition = null;
+    if (this.speech) {
+      this.speech.stop();
+      this.speech = null;
     }
 
     // Stop microphone
@@ -392,6 +428,20 @@ export class UnifiedAudioPipeline {
 
   isInitialized(): boolean {
     return this.isInitialized;
+  }
+
+  // Start speech recognition
+  startSpeech(): void {
+    if (this.speech) {
+      this.speech.start();
+    }
+  }
+
+  // Stop speech recognition
+  stopSpeech(): void {
+    if (this.speech) {
+      this.speech.stop();
+    }
   }
 }
 
