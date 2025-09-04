@@ -171,7 +171,7 @@ export class UnifiedAudioPipeline {
       const blob = new Blob([data], { type: mime });
       const objectUrl = URL.createObjectURL(blob);
 
-      // Wire analyzers before playback
+      // Wire analyzers before playback (only for server TTS)
       if (this.audioContext && this.ttsAudioEl) {
         if (!this.aiSource) {
           this.aiSource = this.audioContext.createMediaElementSource(this.ttsAudioEl);
@@ -202,6 +202,11 @@ export class UnifiedAudioPipeline {
   private async playClientTTS(text: string): Promise<void> {
     if (typeof window === 'undefined' || !window.speechSynthesis) {
       throw new Error('Client TTS not available');
+    }
+
+    // In client TTS mode, set aiAnalyzer to null since we don't have audio element
+    if (process.env.NEXT_PUBLIC_TTS_MODE === 'client') {
+      this.aiAnalyzer = null;
     }
 
     return new Promise((resolve, reject) => {
@@ -257,19 +262,38 @@ export class UnifiedAudioPipeline {
   private startBargeInMonitoring(): void {
     if (this.bargeInMonitoring) return;
 
-    // Only start if BOTH mic analyser and aiAnalyser exist
-    if (!this.micAnalyzer || !this.aiAnalyser) {
-      logWarn('[UnifiedAudio] Analyzers not ready for barge-in monitoring - mic:', !!this.micAnalyzer, 'ai:', !!this.aiAnalyser);
-      return;
+    // Check if we're in client TTS mode
+    const isClientTTSMode = process.env.NEXT_PUBLIC_TTS_MODE === 'client';
+
+    if (isClientTTSMode) {
+      // In client TTS mode, only monitor mic analyzer (no AI analyzer)
+      if (!this.micAnalyzer) {
+        logWarn('[UnifiedAudio] Mic analyzer not ready for barge-in monitoring');
+        return;
+      }
+
+      this.bargeInMonitoring = true;
+      logInfo('[UnifiedAudio] BARGE_MONITORING_START mic:true ai:false (client TTS mode)');
+      logDebug('[UnifiedAudio] Starting barge-in monitoring (client TTS mode)');
+
+      this.bargeInInterval = setInterval(() => {
+        this.checkBargeInClientMode();
+      }, 16); // ~60fps
+    } else {
+      // In server TTS mode, require BOTH mic analyser and aiAnalyser
+      if (!this.micAnalyzer || !this.aiAnalyser) {
+        logWarn('[UnifiedAudio] Analyzers not ready for barge-in monitoring - mic:', !!this.micAnalyzer, 'ai:', !!this.aiAnalyser);
+        return;
+      }
+
+      this.bargeInMonitoring = true;
+      logInfo('[UnifiedAudio] BARGE_MONITORING_START mic:true ai:true');
+      logDebug('[UnifiedAudio] Starting barge-in monitoring (server TTS mode)');
+
+      this.bargeInInterval = setInterval(() => {
+        this.checkBargeIn();
+      }, 16); // ~60fps
     }
-
-    this.bargeInMonitoring = true;
-    logInfo('[UnifiedAudio] BARGE_MONITORING_START mic:true ai:true');
-    logDebug('[UnifiedAudio] Starting barge-in monitoring');
-
-    this.bargeInInterval = setInterval(() => {
-      this.checkBargeIn();
-    }, 16); // ~60fps
   }
 
   private stopBargeInMonitoring(): void {
@@ -296,6 +320,22 @@ export class UnifiedAudioPipeline {
     // Check if user is speaking while AI is talking
     if (micRMS > 0.1 && aiRMS > 0.05) {
       logInfo(`[UnifiedAudio] BARGE_SPEECH_DETECTED rms:${micRMS.toFixed(3)}`);
+      
+      // Stop TTS and trigger barge-in
+      this.stopTTS();
+      this.config.onBargeIn?.();
+    }
+  }
+
+  private checkBargeInClientMode(): void {
+    if (!this.micAnalyzer) return;
+
+    const micRMS = this.calculateRMS(this.micAnalyzer);
+
+    // In client TTS mode, only check mic level for barge-in
+    // This is a simplified approach - you might want to add more sophisticated logic
+    if (micRMS > 0.15) { // Slightly higher threshold since we're not comparing to AI audio
+      logInfo(`[UnifiedAudio] BARGE_SPEECH_DETECTED (client mode) rms:${micRMS.toFixed(3)}`);
       
       // Stop TTS and trigger barge-in
       this.stopTTS();

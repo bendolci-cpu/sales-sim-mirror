@@ -136,18 +136,21 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
       };
       
       rec.onerror = (event: any) => {
-        logWarn(`[EnhancedSpeech] Recognition error: ${event.error}`);
-        
         // Handle specific errors
         if (event.error === 'aborted') {
           // Don't restart immediately on abort - let onend handle it
-          logDebug('[EnhancedSpeech] Recognition aborted - will restart if needed');
-        } else if (event.error === 'network') {
-          // Network errors get a longer cooldown
-          setRestartCooldown(1000);
+          logInfo('[EnhancedSpeech] Recognition aborted - will restart if needed');
         } else {
-          // Other errors get a short cooldown
-          setRestartCooldown(250);
+          // Log other errors as warnings
+          logWarn(`[EnhancedSpeech] Recognition error: ${event.error}`);
+          
+          if (event.error === 'network') {
+            // Network errors get a longer cooldown
+            setRestartCooldown(1000);
+          } else {
+            // Other errors get a short cooldown
+            setRestartCooldown(250);
+          }
         }
       };
       

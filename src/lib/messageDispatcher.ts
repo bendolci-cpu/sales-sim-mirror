@@ -27,7 +27,7 @@ export type MessageHandler = (request: MessageRequest) => Promise<MessageRespons
 
 class MessageDispatcher {
   private handlers: MessageHandler[] = [];
-  private isConnected = false;
+  private connected = false;
   private messageQueue: MessageRequest[] = [];
   private retryCount = 0;
   private maxRetries = 3;
@@ -49,13 +49,38 @@ class MessageDispatcher {
     }
   }
 
-  // Set connection status
-  setConnected(connected: boolean) {
-    this.isConnected = connected;
-    if (connected && this.messageQueue.length > 0) {
+  // Connect the dispatcher (idempotent)
+  connect(): void {
+    if (this.connected) {
+      logInfo('[MessageDispatcher] Already connected, returning early');
+      return;
+    }
+    
+    this.connected = true;
+    logInfo('[MessageDispatcher] Connected');
+    
+    // Process any queued messages
+    if (this.messageQueue.length > 0) {
       logInfo('[MessageDispatcher] Connection restored, processing queued messages', { queueLength: this.messageQueue.length });
       this.processQueue();
     }
+  }
+
+  // Disconnect the dispatcher (idempotent)
+  disconnect(): void {
+    if (!this.connected) {
+      logInfo('[MessageDispatcher] Already disconnected, returning early');
+      return;
+    }
+    
+    this.connected = false;
+    this.clearQueue();
+    logInfo('[MessageDispatcher] Disconnected and queue cleared');
+  }
+
+  // Get connection status
+  isConnected(): boolean {
+    return this.connected;
   }
 
   // Send a message (main entry point)
@@ -73,11 +98,20 @@ class MessageDispatcher {
       confidence: request.metadata.confidence
     });
 
-    // If not connected, queue the message
-    if (!this.isConnected) {
-      this.messageQueue.push(request);
-      logWarn('[MessageDispatcher] Not connected, queuing message', { queueLength: this.messageQueue.length });
-      return null;
+    // If not connected, attempt a single connect() and then drop if still not connected
+    if (!this.connected) {
+      try {
+        logInfo('[MessageDispatcher] Not connected, attempting to connect...');
+        this.connect();
+      } catch (error) {
+        logError('[MessageDispatcher] Failed to connect:', error);
+      }
+      
+      // If still not connected after attempt, drop the message
+      if (!this.connected) {
+        logInfo('[MessageDispatcher] Dispatcher offline; dropped message: {id}', { id: messageId });
+        return null;
+      }
     }
 
     // If already awaiting AI response, queue this message
@@ -177,11 +211,6 @@ class MessageDispatcher {
     }
   }
 
-  // Get connection status
-  isConnected(): boolean {
-    return this.isConnected;
-  }
-
   // Get queue length
   getQueueLength(): number {
     return this.messageQueue.length;
@@ -215,8 +244,12 @@ export function sendMessage(request: MessageRequest): Promise<MessageResponse | 
   return messageDispatcher.sendMessage(request);
 }
 
-export function setMessageDispatcherConnected(connected: boolean) {
-  messageDispatcher.setConnected(connected);
+export function connectMessageDispatcher() {
+  messageDispatcher.connect();
+}
+
+export function disconnectMessageDispatcher() {
+  messageDispatcher.disconnect();
 }
 
 export function isMessageDispatcherConnected(): boolean {

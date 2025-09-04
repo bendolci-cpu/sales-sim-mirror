@@ -13,9 +13,9 @@ import CallBar from "@/components/CallBar";
 import DebugToggle from "@/components/DebugToggle";
 import AudioDeviceSelector from "@/components/AudioDeviceSelector";
 import { logInfo, logError } from "@/lib/logger";
-import { registerMessageHandler, unregisterMessageHandler, setMessageDispatcherConnected } from "@/lib/messageDispatcher";
+import { registerMessageHandler, unregisterMessageHandler, connectMessageDispatcher, disconnectMessageDispatcher } from "@/lib/messageDispatcher";
 import { getUnifiedAudioPipeline, cleanupUnifiedAudioPipeline } from "@/lib/unifiedAudioPipeline";
-import { Room, createLocalAudioTrack } from "livekit-client";
+import { Room } from "livekit-client";
 import type { MessageRequest, MessageResponse } from "@/lib/messageDispatcher";
 
 // Helper function to connect LiveKit with existing mic track
@@ -63,6 +63,7 @@ function SessionInner() {
   // Refs
   const unifiedPipeline = useRef<ReturnType<typeof getUnifiedAudioPipeline> | null>(null);
   const livekitRoom = useRef<Room | null>(null);
+  const callEndedRef = useRef(false);
   const scenario = SCENARIOS.find(s => s.id === scenarioId);
   
   // Initialize pipeline on client side only
@@ -192,6 +193,7 @@ function SessionInner() {
     
     logInfo("[Session] Starting call");
     setIsInitializing(true);
+    callEndedRef.current = false;
     
     try {
       // Initialize unified pipeline
@@ -211,12 +213,8 @@ function SessionInner() {
         await connectToLiveKit();
       }
       
-      // Connect message dispatcher
-      logInfo("[Session] Connecting message dispatcher...");
-      setMessageDispatcherConnected(true);
-      
-      // Start speech recognition
-      if (unifiedPipeline.current) {
+      // Start speech recognition (only if call hasn't ended)
+      if (unifiedPipeline.current && !callEndedRef.current) {
         unifiedPipeline.current.startSpeech();
         logInfo("[Session] Speech recognition started");
       }
@@ -308,6 +306,11 @@ function SessionInner() {
       }
       
       logInfo("[Session] Connected to LiveKit room");
+      
+      // Connect message dispatcher after successful LiveKit connection
+      connectMessageDispatcher();
+      logInfo("[Session] Message dispatcher connected");
+      
     } catch (error) {
       logError("[Session] Failed to connect to LiveKit:", error);
     }
@@ -317,6 +320,7 @@ function SessionInner() {
     if (!voiceConnected) return;
     
     logInfo("[Session] DISCONNECT_REASON:user_explicit_end");
+    callEndedRef.current = true;
     
     // Disconnect from LiveKit
     if (livekitRoom.current) {
@@ -324,11 +328,8 @@ function SessionInner() {
       livekitRoom.current = null;
     }
     
-    // Disconnect message dispatcher
-    setMessageDispatcherConnected(false);
-    
-    // Stop speech recognition
-    if (unifiedPipeline.current) {
+    // Stop speech recognition (only if call hasn't ended)
+    if (unifiedPipeline.current && !callEndedRef.current) {
       unifiedPipeline.current.stopSpeech();
       logInfo("[Session] Speech recognition stopped");
     }
@@ -337,6 +338,10 @@ function SessionInner() {
     if (unifiedPipeline.current) {
       unifiedPipeline.current.forceCleanup();
     }
+    
+    // Disconnect message dispatcher after cleanup
+    disconnectMessageDispatcher();
+    logInfo("[Session] Message dispatcher disconnected");
     
     setVoiceConnected(false);
     setMicStream(null);
@@ -394,7 +399,7 @@ function SessionInner() {
         unifiedPipeline.current.cleanup();
       }
     };
-  }, [turns, voiceConnected]); // Include voiceConnected in dependency to access latest state
+  }, [voiceConnected]); // Include voiceConnected to access latest state
   
   // === RENDER ===
   
