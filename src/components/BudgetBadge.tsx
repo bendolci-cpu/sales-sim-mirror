@@ -34,7 +34,7 @@ export default function BudgetBadge() {
       if (!res.ok) return;
       const json = (await res.json()) as BudgetResp;
       setData(json);
-    } catch (error) {
+    } catch {
       // Silently handle errors to avoid console spam
     }
   }, []);

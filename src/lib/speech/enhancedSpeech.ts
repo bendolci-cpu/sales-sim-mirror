@@ -78,7 +78,7 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
   let ttsPlaying = false;
   let isGating = false; // Whether ASR is currently gated due to TTS
   
-  // Interim text buffer for continuous ASR
+  // Interim text buffer for continuous ASR (used in onresult)
   let interimBuffer = '';
   
   // Duplicate suppression
@@ -378,7 +378,7 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
   
   // Health monitoring
   function startHealthMonitoring() {
-    const healthTimer = setInterval(() => {
+    setInterval(() => {
       const now = Date.now();
       if (now - lastHealthLog >= HEALTH_LOG_INTERVAL) {
         logHealth();

@@ -29,7 +29,6 @@ export type ChatWindowProps = {
 };
 
 export default function ChatWindow({ visible = true, seedMessages, voiceConnected = false, callActive = false, onUserUtterance, externalTurn }: ChatWindowProps) {
-  if (!visible) return null;
   const seeded = useRef<boolean>(false);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [inputValue, setInputValue] = useState("");
@@ -37,6 +36,8 @@ export default function ChatWindow({ visible = true, seedMessages, voiceConnecte
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const lastExternalHashRef = useRef<string>("");
   const [interim, setInterim] = useState<string>("");
+
+  if (!visible) return null;
 
   useEffect(() => {
     if (!scrollRef.current) return;
