@@ -283,6 +283,7 @@ export class UnifiedAudioPipeline {
       this.ttsEl!.src = objectUrl;
       await this.ttsEl!.play();
       
+      logInfo(`[TTS] playback started`, { turnId });
       logInfo(`[UnifiedAudio] TTS audio element started playback: "${text}"`);
 
     } catch (error) {

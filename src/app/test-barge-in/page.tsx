@@ -16,7 +16,7 @@ export default function TestBargeInPage() {
 
   const startTest = () => {
     // Navigate to session with barge-in testing parameters
-    router.push('/session?mode=challenge&mock=1&scenario=ed-turnover-high-touch&test_barge_in=1&disableFastRefresh=1');
+    router.push('/session?mode=challenge&scenario=ed-turnover-high-touch&test_barge_in=1&disableFastRefresh=1');
   };
 
   return (
@@ -30,7 +30,7 @@ export default function TestBargeInPage() {
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
             <h2 className="font-semibold text-blue-900 mb-2">Test Instructions:</h2>
             <ol className="text-sm text-blue-800 space-y-2 list-decimal list-inside">
-              <li>Click "Start Test" to begin a mock call</li>
+              <li>Click "Start Test" to begin a test call</li>
               <li>Wait for the AI to start speaking</li>
               <li>Try interrupting by speaking loudly</li>
               <li>The AI should stop immediately when you speak</li>

@@ -230,7 +230,7 @@ export default function TestAudioPage() {
   };
 
   const startCall = () => {
-    router.push('/session?mode=challenge&mock=1&scenario=ed-turnover-high-touch');
+    router.push('/session?mode=challenge&scenario=ed-turnover-high-touch');
   };
 
   useEffect(() => {

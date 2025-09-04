@@ -8,7 +8,7 @@ const ChatWindowClient = dynamic(() => import("@/components/ChatWindow"), { ssr:
 import BudgetBadge from "@/components/BudgetBadge";
 import ScenarioPicker from "@/components/ScenarioPicker";
 import { SCENARIOS } from "@/data/scenarios";
-import { getAgentReply } from "@/lib/voice/mockAgent";
+
 import CallBar from "@/components/CallBar";
 import DebugToggle from "@/components/DebugToggle";
 import AudioDeviceSelector from "@/components/AudioDeviceSelector";
@@ -46,7 +46,6 @@ function SessionInner() {
   
   // URL parameters
   const mode = searchParams.get("mode") || "practice";
-  const isMock = searchParams.get("mock") === "1";
   const scenarioId = searchParams.get("scenario") || "cdi-outbreak-icu";
   const showChat = searchParams.get("chat") === "1";
   
@@ -140,31 +139,24 @@ function SessionInner() {
     
     // Generate AI response
     try {
-      let aiResponse: string;
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [...turns, userTurn].map(turn => ({
+            role: turn.role,
+            text: turn.text
+          }))
+        })
+      });
       
-      if (isMock) {
-        aiResponse = getAgentReply([...turns, userTurn], scenario || SCENARIOS[0]);
-        logInfo(`[Session] Generated mock response: ${aiResponse}`);
-      } else {
-        const response = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            messages: [...turns, userTurn].map(turn => ({
-              role: turn.role,
-              text: turn.text
-            }))
-          })
-        });
-        
-        if (!response.ok) {
-          throw new Error(`API error: ${response.status}`);
-        }
-        
-        const data = await response.json();
-        aiResponse = data.content || data.response || "I didn't catch that. Could you please repeat?";
-        logInfo(`[Session] Generated live response: ${aiResponse}`);
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
       }
+      
+      const data = await response.json();
+      const aiResponse = data.content || data.response || "I didn't catch that. Could you please repeat?";
+      logInfo(`[Session] Generated live response: ${aiResponse}`);
       
       // Add AI turn
       const aiTurn: Turn = {
@@ -183,7 +175,7 @@ function SessionInner() {
       });
       
       // Play TTS if connected
-      if (voiceConnected && !isMock && unifiedPipeline.current) {
+      if (voiceConnected && unifiedPipeline.current) {
         try {
           const turnId = aiTurn.id;
           await unifiedPipeline.current.playTTS(aiResponse, turnId);
@@ -239,12 +231,10 @@ function SessionInner() {
       const stream = unifiedPipeline.current.getMicStream();
       setMicStream(stream);
       
-      // Connect to LiveKit if not in mock mode
-      if (!isMock) {
-        await connectToLiveKit(micTrack);
-      }
+      // Connect to LiveKit
+      await connectToLiveKit(micTrack);
       
-      // Connect message dispatcher after successful LiveKit connection (or if mock mode)
+      // Connect message dispatcher after successful LiveKit connection
       connectMessageDispatcher();
       logInfo("[Session] Message dispatcher connected");
       
@@ -274,29 +264,25 @@ function SessionInner() {
           timestamp: greetingTurn.timestamp
         });
         
-        if (!isMock) {
+        try {
+          logInfo("[Session] Starting TTS for greeting...");
+          const greetingTurnId = greetingTurn.id;
+          
+          // Wrap TTS with mute gating and guarantee unmute and restart recognition
+          setMuted(true);
           try {
-            logInfo("[Session] Starting TTS for greeting...");
-            const greetingTurnId = greetingTurn.id;
-            
-            // Wrap TTS with mute gating and guarantee unmute and restart recognition
-            setMuted(true);
-            try {
-              await unifiedPipeline.current.playTTS(greeting, greetingTurnId);
-            } finally {
-              setMuted(false);
-              // Restart recognition after greeting finishes
-              if (unifiedPipeline.current) {
-                unifiedPipeline.current.startSpeech();
-              }
+            await unifiedPipeline.current.playTTS(greeting, greetingTurnId);
+          } finally {
+            setMuted(false);
+            // Restart recognition after greeting finishes
+            if (unifiedPipeline.current) {
+              unifiedPipeline.current.startSpeech();
             }
-            
-            logInfo("[Session] Greeting TTS completed");
-          } catch (error) {
-            logError(`[Session] Greeting TTS failed:`, error);
           }
-        } else {
-          logInfo("[Session] Mock mode - skipping TTS");
+          
+          logInfo("[Session] Greeting TTS completed");
+        } catch (error) {
+          logError(`[Session] Greeting TTS failed:`, error);
         }
       } else {
         logInfo("[Session] No greeting available");
@@ -494,7 +480,7 @@ function SessionInner() {
               onChange={(newScenarioId) => {
                 logInfo(`[Session] Scenario changed from ${scenarioId} to ${newScenarioId}`);
                 // Update the URL to trigger a rerender with the new scenario
-                router.push(`/session?mode=${mode}&mock=${isMock ? '1' : '0'}&scenario=${newScenarioId}`);
+                router.push(`/session?mode=${mode}&scenario=${newScenarioId}`);
               }} 
             />
           </div>
