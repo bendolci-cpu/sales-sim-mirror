@@ -1,11 +1,16 @@
 "use client";
 
 import React, { useState, useEffect } from 'react';
-import { audioManager, type AudioDevice, type AudioOutputDevice } from '@/lib/audio';
+
+interface AudioDevice {
+  deviceId: string;
+  label: string;
+  groupId?: string;
+}
 
 export default function AudioDeviceSelector() {
   const [inputDevices, setInputDevices] = useState<AudioDevice[]>([]);
-  const [outputDevices, setOutputDevices] = useState<AudioOutputDevice[]>([]);
+  const [outputDevices, setOutputDevices] = useState<AudioDevice[]>([]);
   const [selectedInput, setSelectedInput] = useState<string>('');
   const [selectedOutput, setSelectedOutput] = useState<string>('');
   const [isTesting, setIsTesting] = useState(false);
@@ -13,21 +18,29 @@ export default function AudioDeviceSelector() {
 
   useEffect(() => {
     loadDevices();
-    
-    // Cleanup on unmount
-    return () => {
-      try {
-        audioManager.cleanup();
-      } catch (e) {
-        console.warn('[AudioDeviceSelector] Failed to clean up audio manager:', e);
-      }
-    };
   }, []);
 
   const loadDevices = async () => {
     try {
-      const inputs = await audioManager.enumerateInputDevices();
-      const outputs = await audioManager.enumerateOutputDevices();
+      // Use navigator.mediaDevices directly
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      
+      const inputs = devices
+        .filter(device => device.kind === 'audioinput')
+        .map(device => ({
+          deviceId: device.deviceId,
+          label: device.label || `Microphone ${device.deviceId.slice(0, 8)}`,
+          groupId: device.groupId
+        }));
+      
+      const outputs = devices
+        .filter(device => device.kind === 'audiooutput')
+        .map(device => ({
+          deviceId: device.deviceId,
+          label: device.label || `Speaker ${device.deviceId.slice(0, 8)}`,
+          groupId: device.groupId
+        }));
+      
       setInputDevices(inputs);
       setOutputDevices(outputs);
       
@@ -55,22 +68,48 @@ export default function AudioDeviceSelector() {
         audio: { deviceId: { exact: selectedInput } }
       });
       
-      // Test levels
-      const level = await audioManager.testMicrophoneLevels(stream);
+      // Create a simple analyzer to test levels
+      const audioContext = new AudioContext();
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyzer = audioContext.createAnalyser();
+      analyzer.fftSize = 256;
       
-      // Stop the stream
-      stream.getTracks().forEach(track => track.stop());
+      source.connect(analyzer);
       
-      if (level > 50) {
-        setTestResult(`✅ Good microphone levels: ${level}`);
-      } else if (level > 10) {
-        setTestResult(`⚠️ Low microphone levels: ${level} - try speaking louder`);
-      } else {
-        setTestResult(`❌ Very low microphone levels: ${level} - check microphone connection`);
-      }
+      // Test levels for a short duration
+      const dataArray = new Uint8Array(analyzer.frequencyBinCount);
+      let maxLevel = 0;
+      
+      const testDuration = 2000; // 2 seconds
+      const startTime = Date.now();
+      
+      const checkLevels = () => {
+        analyzer.getByteFrequencyData(dataArray);
+        const currentLevel = Math.max(...dataArray);
+        maxLevel = Math.max(maxLevel, currentLevel);
+        
+        if (Date.now() - startTime < testDuration) {
+          requestAnimationFrame(checkLevels);
+        } else {
+          // Stop the stream and cleanup
+          stream.getTracks().forEach(track => track.stop());
+          audioContext.close();
+          
+          if (maxLevel > 50) {
+            setTestResult(`✅ Good microphone levels: ${maxLevel}`);
+          } else if (maxLevel > 10) {
+            setTestResult(`⚠️ Low microphone levels: ${maxLevel} - try speaking louder`);
+          } else {
+            setTestResult(`❌ Very low microphone levels: ${maxLevel} - check microphone connection`);
+          }
+        }
+      };
+      
+      checkLevels();
+      setTestResult('🎤 Testing microphone... Please speak');
+      
     } catch (error) {
       setTestResult(`❌ Test failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    } finally {
       setIsTesting(false);
     }
   };
@@ -79,14 +118,8 @@ export default function AudioDeviceSelector() {
     if (!selectedOutput) return;
     
     try {
-      // Create a test audio element with unique ID
-      const testEl = await audioManager.createAudioElement(`testOutput_${Date.now()}`, {
-        routeToDevice: selectedOutput,
-        volume: 0.3
-      });
-      
-      // Create a simple test tone
-      const audioContext = await audioManager.getAudioContext();
+      // Create a simple test tone without global AudioContext
+      const audioContext = new AudioContext();
       const oscillator = audioContext.createOscillator();
       const gainNode = audioContext.createGain();
       
@@ -100,7 +133,10 @@ export default function AudioDeviceSelector() {
       oscillator.stop(audioContext.currentTime + 1);
       
       setTestResult('🔊 Playing test tone...');
-      setTimeout(() => setTestResult(''), 2000);
+      setTimeout(() => {
+        setTestResult('');
+        audioContext.close();
+      }, 2000);
     } catch (error) {
       setTestResult(`❌ Audio output test failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }

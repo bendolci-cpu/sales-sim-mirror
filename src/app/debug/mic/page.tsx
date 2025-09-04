@@ -2,18 +2,18 @@
 
 import { useEffect, useRef, useState } from "react";
 import { SpeechManager } from "@/lib/voice/SpeechManager";
-import { mic, useMicStatus } from "@/lib/mic";
 
 export default function MicDebugPage() {
   const [status, setStatus] = useState(SpeechManager.state.status);
   const [lastError, setLastError] = useState<string | undefined>(SpeechManager.state.lastError);
   const [interim, setInterim] = useState<string>("");
   const [lines, setLines] = useState<string[]>([]);
-  const micStatus = useMicStatus();
+  const [micStatus, setMicStatus] = useState<string>("idle");
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rafRef = useRef<number | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => {
     const offRes = SpeechManager.onResult(({ interim, final }) => {
@@ -28,6 +28,9 @@ export default function MicDebugPage() {
   async function startVu() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStreamRef.current = stream;
+      setMicStatus("active");
+      
       const AC: any = (window as any).AudioContext || (window as any).webkitAudioContext;
       const ctx = new AC(); audioCtxRef.current = ctx;
       const analyser = ctx.createAnalyser(); analyser.fftSize = 256; analyserRef.current = analyser;
@@ -46,13 +49,21 @@ export default function MicDebugPage() {
         rafRef.current = requestAnimationFrame(render);
       };
       rafRef.current = requestAnimationFrame(render);
-    } catch {}
+    } catch (error) {
+      setMicStatus("error");
+      console.error("Failed to start mic:", error);
+    }
   }
 
   function stopVu() {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     try { audioCtxRef.current?.close(); } catch {}
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach(track => track.stop());
+      micStreamRef.current = null;
+    }
     rafRef.current = null; audioCtxRef.current = null; analyserRef.current = null;
+    setMicStatus("idle");
   }
 
   return (
@@ -64,8 +75,8 @@ export default function MicDebugPage() {
           {lastError && <div className="text-xs text-amber-700">{lastError}</div>}
         </div>
         <div className="mt-3 flex items-center gap-3">
-          <button className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs text-white" onClick={async () => { await mic.start(); SpeechManager.start(); startVu(); }}>Start</button>
-          <button className="rounded-md bg-rose-600 px-3 py-1.5 text-xs text-white" onClick={() => { mic.stop(); SpeechManager.stop(); stopVu(); }}>Stop</button>
+          <button className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs text-white" onClick={async () => { await startVu(); SpeechManager.start(); }}>Start</button>
+          <button className="rounded-md bg-rose-600 px-3 py-1.5 text-xs text-white" onClick={() => { stopVu(); SpeechManager.stop(); }}>Stop</button>
           <button className="rounded-md border px-3 py-1.5 text-xs" onClick={() => setLines([])}>Clear Logs</button>
         </div>
         <div className="mt-3 flex items-center gap-3">

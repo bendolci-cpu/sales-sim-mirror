@@ -3,8 +3,6 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import AudioDeviceSelector from '@/components/AudioDeviceSelector';
-import { audioManager } from '@/lib/audio';
-import { mic } from '@/lib/mic';
 
 export default function TestAudioPage() {
   const router = useRouter();
@@ -22,30 +20,58 @@ export default function TestAudioPage() {
     addResult('Starting microphone test...');
     
     try {
-      // Get microphone stream
-      const stream = await mic.start();
+      // Get microphone stream directly
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       setMicStream(stream);
       
       if (stream) {
         addResult('✅ Microphone access granted');
         
         // Test levels for 3 seconds
-        const level = await audioManager.testMicrophoneLevels(stream);
-        setMicLevel(level);
+        const audioContext = new AudioContext();
+        const source = audioContext.createMediaStreamSource(stream);
+        const analyzer = audioContext.createAnalyser();
+        analyzer.fftSize = 256;
+        source.connect(analyzer);
         
-        if (level > 50) {
-          addResult(`✅ Good microphone levels: ${level}`);
-        } else if (level > 10) {
-          addResult(`⚠️ Low microphone levels: ${level} - try speaking louder`);
-        } else {
-          addResult(`❌ Very low microphone levels: ${level} - check microphone connection`);
-        }
+        const dataArray = new Uint8Array(analyzer.frequencyBinCount);
+        let maxLevel = 0;
+        
+        const testDuration = 3000; // 3 seconds
+        const startTime = Date.now();
+        
+        const checkLevels = () => {
+          analyzer.getByteFrequencyData(dataArray);
+          const currentLevel = Math.max(...dataArray);
+          maxLevel = Math.max(maxLevel, currentLevel);
+          
+          if (Date.now() - startTime < testDuration) {
+            requestAnimationFrame(checkLevels);
+          } else {
+            // Stop the stream and cleanup
+            stream.getTracks().forEach(track => track.stop());
+            audioContext.close();
+            setMicLevel(maxLevel);
+            
+            if (maxLevel > 50) {
+              addResult(`✅ Good microphone levels: ${maxLevel}`);
+            } else if (maxLevel > 10) {
+              addResult(`⚠️ Low microphone levels: ${maxLevel} - try speaking louder`);
+            } else {
+              addResult(`❌ Very low microphone levels: ${maxLevel} - check microphone connection`);
+            }
+            setIsTestingMic(false);
+          }
+        };
+        
+        checkLevels();
+        addResult('🎤 Testing microphone levels... Please speak for 3 seconds');
       } else {
         addResult('❌ Failed to get microphone stream');
+        setIsTestingMic(false);
       }
     } catch (error) {
       addResult(`❌ Microphone test failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    } finally {
       setIsTestingMic(false);
     }
   };
@@ -54,8 +80,8 @@ export default function TestAudioPage() {
     addResult('Testing audio output...');
     
     try {
-      // Create a test tone
-      const audioContext = await audioManager.getAudioContext();
+      // Create a test tone directly
+      const audioContext = new AudioContext();
       const oscillator = audioContext.createOscillator();
       const gainNode = audioContext.createGain();
       
@@ -69,6 +95,11 @@ export default function TestAudioPage() {
       oscillator.stop(audioContext.currentTime + 1);
       
       addResult('🔊 Playing test tone - you should hear a beep');
+      
+      // Cleanup after tone
+      setTimeout(() => {
+        audioContext.close();
+      }, 1500);
     } catch (error) {
       addResult(`❌ Audio output test failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
@@ -108,13 +139,18 @@ export default function TestAudioPage() {
       if (micStream) {
         micStream.getTracks().forEach(track => track.stop());
       }
-      mic.stop();
       
-      // Clean up audio manager
-      try {
-        audioManager.cleanup();
-      } catch (e) {
-        console.warn('[TestAudio] Failed to clean up audio manager:', e);
+      // Clean up audio context if it exists
+      if (typeof AudioContext !== 'undefined') {
+        try {
+          // @ts-ignore - AudioContext is not defined in this scope, but it's global
+          if (window.AudioContext) {
+            // @ts-ignore - AudioContext is not defined in this scope, but it's global
+            window.AudioContext.close();
+          }
+        } catch (e) {
+          console.warn('[TestAudio] Failed to clean up AudioContext:', e);
+        }
       }
     };
   }, [micStream]);

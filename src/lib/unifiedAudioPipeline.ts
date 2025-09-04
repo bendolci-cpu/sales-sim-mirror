@@ -70,9 +70,9 @@ export class UnifiedAudioPipeline {
       throw new Error('No audio track found in microphone stream');
     }
 
-    // Store in _micTrack
-    this._micTrack = track;
-    
+    // Store the stream for getMicStream() to return
+    this.micStream = stream;
+
     // Create/attach the micAnalyser if not already created
     if (this.audioContext && !this.micAnalyzer) {
       this.micSource = this.audioContext.createMediaStreamSource(stream);
@@ -83,6 +83,9 @@ export class UnifiedAudioPipeline {
       logInfo('[UnifiedAudio] Microphone analyzer ready');
     }
 
+    // Store in _micTrack
+    this._micTrack = track;
+    
     // Add an ended listener that clears _micTrack so we can re-request if the device changes
     track.addEventListener('ended', () => {
       this._micTrack = null;
@@ -93,6 +96,11 @@ export class UnifiedAudioPipeline {
     const deviceId = track.getSettings?.()?.deviceId;
     const label = track.label;
     logInfo('[UnifiedAudio] Mic track created', { deviceId, label });
+
+    // Notify mic track is ready if callback provided
+    if (this.config.onMicTrackReady) {
+      this.config.onMicTrackReady(track);
+    }
 
     return track;
   }
@@ -120,6 +128,16 @@ export class UnifiedAudioPipeline {
           sampleRate: 24000 
         });
         logInfo('[UnifiedAudio] AudioContext created');
+      }
+
+      // If micStream exists but micAnalyzer is null, create it now
+      if (this.micStream && !this.micAnalyzer) {
+        this.micSource = this.audioContext.createMediaStreamSource(this.micStream);
+        this.micAnalyzer = this.audioContext.createAnalyser();
+        this.micAnalyzer.fftSize = 256;
+        this.micAnalyzer.smoothingTimeConstant = 0.8;
+        this.micSource.connect(this.micAnalyzer);
+        logInfo('[UnifiedAudio] Microphone analyzer created during initialize');
       }
 
       // Create TTS audio element - maintain ONE across the session
@@ -200,13 +218,16 @@ export class UnifiedAudioPipeline {
     // Record TTS start time for grace window
     this.ttsStartTime = Date.now();
 
+    // Gate ASR during TTS
+    this.speech?.setTTSPlaying(true);
+
     // Start AI analyzer at TTS start
     this.startBargeInMonitoring();
 
     try {
       // Check if we should use client TTS fallback
       if (process.env.NEXT_PUBLIC_TTS_MODE === 'client' && typeof window !== 'undefined' && window.speechSynthesis) {
-        await this.playClientTTS(text);
+        await this.playClientTTS(text, turnId);
         return;
       }
 
@@ -218,7 +239,7 @@ export class UnifiedAudioPipeline {
       if (!res.ok || res.status === 204) {
         // Server TTS failed or returned no content, fall back to client
         logWarn('[UnifiedAudio] Server TTS failed, falling back to client TTS');
-        await this.playClientTTS(text);
+        await this.playClientTTS(text, turnId);
         return;
       }
       
@@ -253,10 +274,16 @@ export class UnifiedAudioPipeline {
         logError(`[UnifiedAudio] TTS failed:`, error);
         this.config.onTTSError?.(error as Error);
       }
+    } finally {
+      // Always ensure proper cleanup on completion/abort/error
+      this.stopBargeInMonitoring();
+      this.speech?.setTTSPlaying(false);
+      this.speech?.startQuietGate();
+      this.config.onTTSEnd?.(turnId);
     }
   }
 
-  private async playClientTTS(text: string): Promise<void> {
+  private async playClientTTS(text: string, turnId: string): Promise<void> {
     if (typeof window === 'undefined' || !window.speechSynthesis) {
       throw new Error('Client TTS not available');
     }
@@ -276,11 +303,18 @@ export class UnifiedAudioPipeline {
       utterance.onend = () => {
         logInfo(`[TTS] end ${Date.now()}`);
         this.stopBargeInMonitoring();
+        this.speech?.setTTSPlaying(false);
+        this.speech?.startQuietGate();
+        this.config.onTTSEnd?.(turnId);
         resolve();
       };
       
       utterance.onerror = (event: SpeechSynthesisErrorEvent) => {
         logError('[UnifiedAudio] Client TTS error:', event);
+        this.stopBargeInMonitoring();
+        this.speech?.setTTSPlaying(false);
+        this.speech?.startQuietGate();
+        this.config.onTTSEnd?.(turnId);
         this.config.onTTSError?.(new Error(`Client TTS error: ${event.error}`));
         reject(new Error(`Client TTS error: ${event.error}`));
       };
@@ -313,6 +347,10 @@ export class UnifiedAudioPipeline {
     // Stop barge-in monitoring
     this.stopBargeInMonitoring();
     
+    // Ensure ASR is properly un-gated
+    this.speech?.setTTSPlaying(false);
+    this.speech?.startQuietGate();
+    
     logInfo('[UnifiedAudio] TTS stopped');
   }
 
@@ -340,8 +378,25 @@ export class UnifiedAudioPipeline {
     } else {
       // In server TTS mode, require BOTH mic analyser and aiAnalyser
       if (!this.aiAnalyser) {
-        logInfo('[UnifiedAudio] AI analyzer not ready, skipping barge-in monitoring');
-        return;
+        // Try to wire the AI analyzer if it's missing
+        if (this.audioContext && this.ttsEl && !this.aiSource) {
+          try {
+            this.aiSource = this.audioContext.createMediaElementSource(this.ttsEl);
+            this.aiAnalyser = this.audioContext.createAnalyser();
+            this.aiAnalyser.fftSize = 2048; // As specified in requirements
+            this.aiSource.connect(this.aiAnalyser);
+            // Also route to output so audio is actually heard:
+            this.aiSource.connect(this.audioContext.destination);
+            logInfo('[UnifiedAudio] AI_ANALYZER_READY:true (wired during barge-in start)');
+          } catch (error) {
+            logError('[UnifiedAudio] Failed to wire AI analyzer during barge-in start:', error);
+          }
+        }
+        
+        if (!this.aiAnalyser) {
+          logInfo('[UnifiedAudio] AI analyzer not ready, skipping barge-in monitoring');
+          return;
+        }
       }
 
       this.bargeInMonitoring = true;

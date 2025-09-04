@@ -537,7 +537,7 @@ function SessionInner() {
                 <div className="mt-2 pt-2 border-t border-blue-300">
                   <div className="font-medium text-blue-900">Dev HUD:</div>
                   <div>Mic: {unifiedPipeline.current?.isMicReady() ? "ready" : "not-ready"}</div>
-                  <div>Dispatcher: {isMuted() ? "connected" : "disconnected"}</div>
+                  <div>Dispatcher: {isMuted() ? "muted" : "unmuted"}</div>
                   <div>Muted: {currentMuteState ? "true" : "false"}</div>
                   <div>Room: {livekitRoom.current?.state === 'connected' ? "connected" : "not"}</div>
                 </div>

@@ -2,9 +2,8 @@
 
 import React, { FormEvent, useEffect, useRef, useState } from "react";
 import MicRecorder from "@/components/MicRecorder";
-import { mic } from "@/lib/mic";
 import { SpeechManager } from "@/lib/voice/SpeechManager";
-import { logInfo, logSummary } from "@/lib/logger";
+import { logInfo } from "@/lib/logger";
 import { sendMessage } from "@/lib/messageDispatcher";
 
 type Message = {
@@ -182,11 +181,9 @@ export default function ChatWindow({ visible = true, isMock = true, seedMessages
               {!callActive && !voiceConnected && (
                 <MicRecorder
                   onTextPartial={async (t) => {
-                    if (!mic.isActive()) { try { await mic.start(); } catch {} }
                     setInputValue(t);
                   }}
                   onTextFinal={async (t) => {
-                    if (!mic.isActive()) { try { await mic.start(); } catch {} }
                     setInputValue(t);
                   }}
                 />
@@ -234,11 +231,9 @@ export default function ChatWindow({ visible = true, isMock = true, seedMessages
               {!callActive && !voiceConnected && (
                 <MicRecorder
                   onTextPartial={async (t) => {
-                    if (!mic.isActive()) { try { await mic.start(); } catch {} }
                     setInputValue(t);
                   }}
                   onTextFinal={async (t) => {
-                    if (!mic.isActive()) { try { await mic.start(); } catch {} }
                     setInputValue(t);
                   }}
                 />
