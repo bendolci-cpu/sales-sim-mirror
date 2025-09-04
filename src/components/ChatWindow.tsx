@@ -37,8 +37,6 @@ export default function ChatWindow({ visible = true, seedMessages, voiceConnecte
   const lastExternalHashRef = useRef<string>("");
   const [interim, setInterim] = useState<string>("");
 
-  if (!visible) return null;
-
   useEffect(() => {
     if (!scrollRef.current) return;
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -90,6 +88,13 @@ export default function ChatWindow({ visible = true, seedMessages, voiceConnecte
     return () => { offRes(); offStatus(); };
   }, [callActive, onUserUtterance]);
 
+  // Allow external call flow to submit user utterances
+  useEffect(() => {
+    if (!onUserUtterance) return;
+  }, [onUserUtterance]);
+
+  if (!visible) return null;
+
   function handleSend(event: FormEvent) {
     event.preventDefault();
     const text = inputValue.trim();
@@ -113,11 +118,6 @@ export default function ChatWindow({ visible = true, seedMessages, voiceConnecte
       onUserUtterance?.(text);
     });
   }
-
-  // Allow external call flow to submit user utterances
-  useEffect(() => {
-    if (!onUserUtterance) return;
-  }, [onUserUtterance]);
 
   return (
     <div className="flex w-full max-w-xl flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow">
