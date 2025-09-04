@@ -3,11 +3,13 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import AudioDeviceSelector from '@/components/AudioDeviceSelector';
+import { getUnifiedAudioPipeline, getCurrentPipeline } from '@/lib/unifiedAudioPipeline';
 
 export default function TestAudioPage() {
   const router = useRouter();
   const [micLevel, setMicLevel] = useState<number>(0);
   const [isTestingMic, setIsTestingMic] = useState(false);
+  const [isTestingBargeIn, setIsTestingBargeIn] = useState(false);
   const [testResults, setTestResults] = useState<string[]>([]);
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
 
@@ -28,7 +30,8 @@ export default function TestAudioPage() {
         addResult('✅ Microphone access granted');
         
         // Test levels for 3 seconds
-        const audioContext = new AudioContext();
+        const pipeline = getCurrentPipeline();
+        const audioContext = pipeline ? pipeline.getOrCreateAudioContext() : new AudioContext();
         const source = audioContext.createMediaStreamSource(stream);
         const analyzer = audioContext.createAnalyser();
         analyzer.fftSize = 256;
@@ -50,7 +53,10 @@ export default function TestAudioPage() {
           } else {
             // Stop the stream and cleanup
             stream.getTracks().forEach(track => track.stop());
-            audioContext.close();
+            // Only close AudioContext if we created our own (not from pipeline)
+            if (!pipeline) {
+              audioContext.close();
+            }
             setMicLevel(maxLevel);
             
             if (maxLevel > 50) {
@@ -80,8 +86,9 @@ export default function TestAudioPage() {
     addResult('Testing audio output...');
     
     try {
-      // Create a test tone directly
-      const audioContext = new AudioContext();
+      // Use shared AudioContext from UnifiedAudioPipeline
+      const pipeline = getCurrentPipeline();
+      const audioContext = pipeline ? pipeline.getOrCreateAudioContext() : new AudioContext();
       const oscillator = audioContext.createOscillator();
       const gainNode = audioContext.createGain();
       
@@ -98,10 +105,61 @@ export default function TestAudioPage() {
       
       // Cleanup after tone
       setTimeout(() => {
-        audioContext.close();
+        // Only close AudioContext if we created our own (not from pipeline)
+        if (!pipeline) {
+          audioContext.close();
+        }
       }, 1500);
     } catch (error) {
       addResult(`❌ Audio output test failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
+
+  const testBargeIn = async () => {
+    if (isTestingBargeIn) return;
+    
+    setIsTestingBargeIn(true);
+    addResult('🎯 Starting barge-in test...');
+    addResult('📢 Playing TTS - try speaking to interrupt it!');
+    
+    try {
+      // Get or create the unified audio pipeline
+      const pipeline = getUnifiedAudioPipeline({
+        onBargeIn: () => {
+          addResult('🎉 BARGED-IN SUCCESSFULLY! TTS was interrupted by your voice.');
+          setIsTestingBargeIn(false);
+        },
+        onTTSEnd: () => {
+          addResult('🔚 TTS finished naturally (no barge-in detected)');
+          setIsTestingBargeIn(false);
+        },
+        onTTSError: (error) => {
+          addResult(`❌ TTS error: ${error.message}`);
+          setIsTestingBargeIn(false);
+        }
+      });
+      
+      // Initialize the pipeline if needed
+      if (!pipeline.isInitialized()) {
+        await pipeline.initialize();
+        addResult('✅ Pipeline initialized');
+      }
+      
+      // Ensure mic track is ready
+      const micTrack = await pipeline.ensureMicTrack();
+      if (micTrack) {
+        addResult('✅ Microphone ready for barge-in detection');
+      }
+      
+      // Play TTS with a test string
+      const testText = "This is a test of the barge-in functionality. I will keep talking for about ten seconds so you can try to interrupt me by speaking. The barge-in detection should pause this audio when you speak loudly enough. Try saying something now to test the interruption.";
+      
+      await pipeline.playTTS(testText, 'barge-in-test');
+      addResult('🎵 TTS playback started - speak now to test barge-in!');
+      
+    } catch (error) {
+      addResult(`❌ Barge-in test failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      setIsTestingBargeIn(false);
     }
   };
 
@@ -125,14 +183,6 @@ export default function TestAudioPage() {
     router.push('/session?mode=challenge&mock=1&scenario=ed-turnover-high-touch');
   };
 
-  const testBargeIn = async () => {
-    addResult('Testing barge-in functionality...');
-    addResult('Starting a mock call to test barge-in...');
-    
-    // Start a mock call with barge-in enabled and Fast Refresh disabled for better testing
-    router.push('/session?mode=challenge&mock=1&scenario=ed-turnover-high-touch&test_barge_in=1&disableFastRefresh=1');
-  };
-
   useEffect(() => {
     // Cleanup on unmount
     return () => {
@@ -140,18 +190,8 @@ export default function TestAudioPage() {
         micStream.getTracks().forEach(track => track.stop());
       }
       
-      // Clean up audio context if it exists
-      if (typeof AudioContext !== 'undefined') {
-        try {
-          // @ts-ignore - AudioContext is not defined in this scope, but it's global
-          if (window.AudioContext) {
-            // @ts-ignore - AudioContext is not defined in this scope, but it's global
-            window.AudioContext.close();
-          }
-        } catch (e) {
-          console.warn('[TestAudio] Failed to clean up AudioContext:', e);
-        }
-      }
+      // Don't close shared AudioContext from pipeline
+      // Only clean up if we created our own contexts
     };
   }, [micStream]);
 
@@ -214,9 +254,10 @@ export default function TestAudioPage() {
                 
                 <button
                   onClick={testBargeIn}
-                  className="w-full px-4 py-2 bg-orange-500 text-white rounded-md hover:bg-orange-600"
+                  disabled={isTestingBargeIn}
+                  className="w-full px-4 py-2 bg-orange-500 text-white rounded-md hover:bg-orange-600 disabled:opacity-50"
                 >
-                  Test Barge-In
+                  {isTestingBargeIn ? 'Testing Barge-In...' : 'Test Barge-In'}
                 </button>
               </div>
 

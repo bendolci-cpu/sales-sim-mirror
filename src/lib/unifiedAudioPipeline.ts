@@ -3,6 +3,7 @@
 
 import { logInfo, logDebug, logWarn, logError } from './logger';
 import { createEnhancedSpeech, type EnhancedSpeechControls } from './speech/enhancedSpeech';
+import { useState, useEffect } from 'react';
 
 export interface UnifiedAudioPipelineConfig {
   onBargeIn?: () => void;
@@ -112,6 +113,17 @@ export class UnifiedAudioPipeline {
   // Add synchronous method to check if mic is ready
   isMicReady(): boolean {
     return !!(this._micTrack && this.micAnalyzer);
+  }
+
+  // Helper method for components to get or create the shared AudioContext
+  getOrCreateAudioContext(): AudioContext {
+    if (!this.audioContext || this.audioContext.state === 'closed') {
+      this.audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)({ 
+        sampleRate: 24000 
+      });
+      logInfo('[UnifiedAudio] AudioContext created via getOrCreateAudioContext');
+    }
+    return this.audioContext;
   }
 
   async initialize(): Promise<void> {
@@ -280,6 +292,9 @@ export class UnifiedAudioPipeline {
       this.speech?.setTTSPlaying(false);
       this.speech?.startQuietGate();
       this.config.onTTSEnd?.(turnId);
+      
+      // Restart speech recognition after TTS finishes
+      this.restartSpeechRecognition();
     }
   }
 
@@ -306,6 +321,7 @@ export class UnifiedAudioPipeline {
         this.speech?.setTTSPlaying(false);
         this.speech?.startQuietGate();
         this.config.onTTSEnd?.(turnId);
+        this.restartSpeechRecognition();
         resolve();
       };
       
@@ -315,6 +331,7 @@ export class UnifiedAudioPipeline {
         this.speech?.setTTSPlaying(false);
         this.speech?.startQuietGate();
         this.config.onTTSEnd?.(turnId);
+        this.restartSpeechRecognition();
         this.config.onTTSError?.(new Error(`Client TTS error: ${event.error}`));
         reject(new Error(`Client TTS error: ${event.error}`));
       };
@@ -350,6 +367,9 @@ export class UnifiedAudioPipeline {
     // Ensure ASR is properly un-gated
     this.speech?.setTTSPlaying(false);
     this.speech?.startQuietGate();
+    
+    // Restart speech recognition after TTS stops
+    this.restartSpeechRecognition();
     
     logInfo('[UnifiedAudio] TTS stopped');
   }
@@ -617,6 +637,27 @@ export class UnifiedAudioPipeline {
       this.speech.stop();
     }
   }
+
+  // Debug information methods
+  getDebugInfo() {
+    return {
+      micReady: this.isMicReady(),
+      micRMS: this.getMicRMS(),
+      ttsPlaying: this.isTTSPlaying(),
+      bargeInMonitoring: this.bargeInMonitoring,
+      audioContextState: this.audioContext?.state || 'null',
+      speechActive: this.speech ? true : false,
+      micTrackId: this._micTrack?.id || 'none',
+      micAnalyzerReady: !!this.micAnalyzer,
+      aiAnalyzerReady: !!this.aiAnalyser
+    };
+  }
+
+  private restartSpeechRecognition(): void {
+    if (this.speech) {
+      this.speech.start();
+    }
+  }
 }
 
 // Singleton instance
@@ -629,9 +670,35 @@ export function getUnifiedAudioPipeline(config?: UnifiedAudioPipelineConfig): Un
   return unifiedPipeline;
 }
 
+// Helper to get the current pipeline instance if it exists
+export function getCurrentPipeline(): UnifiedAudioPipeline | null {
+  return unifiedPipeline;
+}
+
 export function cleanupUnifiedAudioPipeline(): void {
   if (unifiedPipeline) {
     unifiedPipeline.cleanup();
     unifiedPipeline = null;
   }
+}
+
+// React hook for debug overlay
+export function useAudioDebugOverlay() {
+  const [debugInfo, setDebugInfo] = useState(() => {
+    const pipeline = getCurrentPipeline();
+    return pipeline ? pipeline.getDebugInfo() : null;
+  });
+
+  useEffect(() => {
+    const pipeline = getCurrentPipeline();
+    if (!pipeline) return;
+
+    const interval = setInterval(() => {
+      setDebugInfo(pipeline.getDebugInfo());
+    }, 200); // Update every 200ms for responsive UI
+
+    return () => clearInterval(interval);
+  }, []);
+
+  return debugInfo;
 }

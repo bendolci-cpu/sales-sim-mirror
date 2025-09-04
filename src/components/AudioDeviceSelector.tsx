@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from 'react';
+import { getCurrentPipeline } from '@/lib/unifiedAudioPipeline';
 
 interface AudioDevice {
   deviceId: string;
@@ -68,8 +69,9 @@ export default function AudioDeviceSelector() {
         audio: { deviceId: { exact: selectedInput } }
       });
       
-      // Create a simple analyzer to test levels
-      const audioContext = new AudioContext();
+      // Use shared AudioContext from UnifiedAudioPipeline
+      const pipeline = getCurrentPipeline();
+      const audioContext = pipeline ? pipeline.getOrCreateAudioContext() : new AudioContext();
       const source = audioContext.createMediaStreamSource(stream);
       const analyzer = audioContext.createAnalyser();
       analyzer.fftSize = 256;
@@ -93,7 +95,10 @@ export default function AudioDeviceSelector() {
         } else {
           // Stop the stream and cleanup
           stream.getTracks().forEach(track => track.stop());
-          audioContext.close();
+          // Only close AudioContext if we created our own (not from pipeline)
+          if (!pipeline) {
+            audioContext.close();
+          }
           
           if (maxLevel > 50) {
             setTestResult(`✅ Good microphone levels: ${maxLevel}`);
@@ -102,11 +107,12 @@ export default function AudioDeviceSelector() {
           } else {
             setTestResult(`❌ Very low microphone levels: ${maxLevel} - check microphone connection`);
           }
+          setIsTesting(false);
         }
       };
       
       checkLevels();
-      setTestResult('🎤 Testing microphone... Please speak');
+      setTestResult('🎤 Testing microphone levels... Please speak for 2 seconds');
       
     } catch (error) {
       setTestResult(`❌ Test failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -115,11 +121,10 @@ export default function AudioDeviceSelector() {
   };
 
   const testAudioOutput = async () => {
-    if (!selectedOutput) return;
-    
     try {
-      // Create a simple test tone without global AudioContext
-      const audioContext = new AudioContext();
+      // Use shared AudioContext from UnifiedAudioPipeline
+      const pipeline = getCurrentPipeline();
+      const audioContext = pipeline ? pipeline.getOrCreateAudioContext() : new AudioContext();
       const oscillator = audioContext.createOscillator();
       const gainNode = audioContext.createGain();
       
@@ -135,7 +140,10 @@ export default function AudioDeviceSelector() {
       setTestResult('🔊 Playing test tone...');
       setTimeout(() => {
         setTestResult('');
-        audioContext.close();
+        // Only close AudioContext if we created our own (not from pipeline)
+        if (!pipeline) {
+          audioContext.close();
+        }
       }, 2000);
     } catch (error) {
       setTestResult(`❌ Audio output test failed: ${error instanceof Error ? error.message : 'Unknown error'}`);

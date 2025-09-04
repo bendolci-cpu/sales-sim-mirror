@@ -14,7 +14,7 @@ import DebugToggle from "@/components/DebugToggle";
 import AudioDeviceSelector from "@/components/AudioDeviceSelector";
 import { logInfo, logError } from "@/lib/logger";
 import { registerMessageHandler, unregisterMessageHandler, connectMessageDispatcher, disconnectMessageDispatcher, setMuted, isMuted } from "@/lib/messageDispatcher";
-import { getUnifiedAudioPipeline, cleanupUnifiedAudioPipeline } from "@/lib/unifiedAudioPipeline";
+import { getUnifiedAudioPipeline, cleanupUnifiedAudioPipeline, useAudioDebugOverlay } from "@/lib/unifiedAudioPipeline";
 import { Room } from "livekit-client";
 import type { MessageRequest, MessageResponse } from "@/lib/messageDispatcher";
 
@@ -63,7 +63,9 @@ function SessionInner() {
   // Debug overlay state
   const [lastASRText, setLastASRText] = useState<string>("");
   const [currentMuteState, setCurrentMuteState] = useState<boolean>(false);
-  const [micRMS, setMicRMS] = useState<number>(0);
+  
+  // Use the centralized debug overlay hook
+  const audioDebugInfo = useAudioDebugOverlay();
   
   // Refs
   const unifiedPipeline = useRef<ReturnType<typeof getUnifiedAudioPipeline> | null>(null);
@@ -113,9 +115,6 @@ function SessionInner() {
   // Debug overlay polling
   useEffect(() => {
     const interval = setInterval(() => {
-      if (unifiedPipeline.current) {
-        setMicRMS(unifiedPipeline.current.getMicRMS());
-      }
       setCurrentMuteState(isMuted());
     }, 200);
 
@@ -531,16 +530,29 @@ function SessionInner() {
               <div className="text-sm text-blue-800 space-y-1">
                 <div>Last ASR: {lastASRText || "None"}</div>
                 <div>Mute State: {currentMuteState ? "Muted" : "Unmuted"}</div>
-                <div>Mic RMS: {micRMS.toFixed(3)}</div>
                 
-                {/* Dev HUD for troubleshooting latency */}
-                <div className="mt-2 pt-2 border-t border-blue-300">
-                  <div className="font-medium text-blue-900">Dev HUD:</div>
-                  <div>Mic: {unifiedPipeline.current?.isMicReady() ? "ready" : "not-ready"}</div>
-                  <div>Dispatcher: {isMuted() ? "muted" : "unmuted"}</div>
-                  <div>Muted: {currentMuteState ? "true" : "false"}</div>
-                  <div>Room: {livekitRoom.current?.state === 'connected' ? "connected" : "not"}</div>
-                </div>
+                {/* Centralized Audio Debug Info */}
+                {audioDebugInfo && (
+                  <>
+                    <div className="mt-2 pt-2 border-t border-blue-300">
+                      <div className="font-medium text-blue-900">Audio Pipeline Status:</div>
+                      <div>Mic: {audioDebugInfo.micReady ? "ready" : "not-ready"}</div>
+                      <div>Mic RMS: {audioDebugInfo.micRMS.toFixed(3)}</div>
+                      <div>TTS: {audioDebugInfo.ttsPlaying ? "playing" : "idle"}</div>
+                      <div>Barge-in: {audioDebugInfo.bargeInMonitoring ? "active" : "inactive"}</div>
+                      <div>Speech: {audioDebugInfo.speechActive ? "active" : "inactive"}</div>
+                      <div>AudioContext: {audioDebugInfo.audioContextState}</div>
+                    </div>
+                    
+                    <div className="mt-2 pt-2 border-t border-blue-300">
+                      <div className="font-medium text-blue-900">Dev HUD:</div>
+                      <div>Dispatcher: {isMuted() ? "muted" : "unmuted"}</div>
+                      <div>Room: {livekitRoom.current?.state === 'connected' ? "connected" : "not"}</div>
+                      <div>Mic Track: {audioDebugInfo.micTrackId}</div>
+                      <div>Analyzers: Mic={audioDebugInfo.micAnalyzerReady ? "✓" : "✗"}, AI={audioDebugInfo.aiAnalyzerReady ? "✓" : "✗"}</div>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           </div>
