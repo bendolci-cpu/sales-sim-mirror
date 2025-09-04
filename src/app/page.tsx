@@ -137,7 +137,7 @@ export default function Home() {
                 disabled={!scenarioId}
                 onClick={() => {
                   if (!selected) return;
-                  const url = `/session/clean?mode=practice&mock=1&scenario=${encodeURIComponent(scenarioId)}`;
+                  const url = `/session?mode=practice&mock=1&scenario=${encodeURIComponent(scenarioId)}`;
                   // eslint-disable-next-line no-console
                   console.log("[Home] Start Clean Session →", { url });
                   addSession({
