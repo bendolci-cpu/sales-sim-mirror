@@ -88,6 +88,13 @@ export class UnifiedAudioPipeline {
         sampleRate: settings.sampleRate 
       });
       
+      // Log mic stream status
+      logInfo('[UnifiedAudio] Mic stream is live:', { 
+        active: track.readyState === 'live',
+        enabled: track.enabled,
+        muted: track.muted
+      });
+      
       // Notify mic track is ready if we have one
       if (this.config.onMicTrackReady && this._micTrack) {
         this.config.onMicTrackReady(this._micTrack);
@@ -155,6 +162,12 @@ export class UnifiedAudioPipeline {
           sampleRate: 24000 
         });
         logInfo('[UnifiedAudio] AudioContext created');
+      }
+
+      // Always resume AudioContext to handle suspended state
+      if (this.audioContext.state === 'suspended') {
+        await this.audioContext.resume();
+        logInfo('[UnifiedAudio] AudioContext resumed from suspended state');
       }
 
       // Create TTS element if needed
@@ -270,7 +283,7 @@ export class UnifiedAudioPipeline {
       this.ttsEl!.src = objectUrl;
       await this.ttsEl!.play();
       
-      logInfo(`[UnifiedAudio] TTS playing: "${text}"`);
+      logInfo(`[UnifiedAudio] TTS audio element started playback: "${text}"`);
 
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
@@ -286,6 +299,8 @@ export class UnifiedAudioPipeline {
       this.speech?.setTTSPlaying(false);
       this.speech?.startQuietGate();
       this.config.onTTSEnd?.(turnId);
+      
+      logInfo('[UnifiedAudio] TTS finished');
       
       // Restart speech recognition after TTS finishes
       this.restartSpeechRecognition();
@@ -306,11 +321,12 @@ export class UnifiedAudioPipeline {
       const utterance = new SpeechSynthesisUtterance(text);
       
       utterance.onstart = () => {
-        logInfo('[UnifiedAudio] Client TTS started');
+        logInfo('[UnifiedAudio] TTS audio element started playback (client)');
       };
       
       utterance.onend = () => {
         logInfo(`[TTS] end ${Date.now()}`);
+        logInfo('[UnifiedAudio] TTS finished');
         this.stopBargeInMonitoring();
         this.speech?.setTTSPlaying(false);
         this.speech?.startQuietGate();
@@ -504,7 +520,14 @@ export class UnifiedAudioPipeline {
   // Public method to get current mic RMS for debug overlay
   getMicRMS(): number {
     if (!this.micAnalyzer) return 0;
-    return this.rms(this.micAnalyzer);
+    const rms = this.rms(this.micAnalyzer);
+    
+    // Log when RMS > 0 (indicating mic input)
+    if (rms > 0) {
+      logInfo('[UnifiedAudio] Analyzer RMS > 0:', { rms: rms.toFixed(3) });
+    }
+    
+    return rms;
   }
 
   private startHealthMonitoring(): void {
@@ -671,6 +694,50 @@ export class UnifiedAudioPipeline {
   forceCleanup(): void {
     logInfo('[UnifiedAudio] Force cleanup initiated');
     this.cleanup();
+  }
+
+  // Self-test method to play a short beep for audio routing verification
+  async playSelfTest(): Promise<void> {
+    try {
+      logInfo('[UnifiedAudio] Starting self-test beep...');
+      
+      // Ensure AudioContext is ready
+      if (!this.audioContext) {
+        this.audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)({ 
+          sampleRate: 24000 
+        });
+      }
+      
+      if (this.audioContext.state === 'suspended') {
+        await this.audioContext.resume();
+      }
+      
+      // Create a short beep
+      const oscillator = this.audioContext.createOscillator();
+      const gainNode = this.audioContext.createGain();
+      
+      oscillator.connect(gainNode);
+      gainNode.connect(this.audioContext.destination);
+      
+      oscillator.frequency.setValueAtTime(440, this.audioContext.currentTime); // A4 note
+      gainNode.gain.setValueAtTime(0.1, this.audioContext.currentTime);
+      
+      oscillator.start();
+      oscillator.stop(this.audioContext.currentTime + 0.5); // 500ms beep
+      
+      logInfo('[UnifiedAudio] Self-test beep started');
+      
+      // Clean up after beep
+      setTimeout(() => {
+        oscillator.disconnect();
+        gainNode.disconnect();
+        logInfo('[UnifiedAudio] Self-test beep completed');
+      }, 600);
+      
+    } catch (error) {
+      logError('[UnifiedAudio] Self-test beep failed:', error);
+      throw error;
+    }
   }
 
   private restartSpeechRecognition(): void {
