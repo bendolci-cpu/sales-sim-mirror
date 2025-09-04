@@ -53,63 +53,74 @@ export class UnifiedAudioPipeline {
   }
 
   // Export two functions as specified
-  async ensureMicTrack(): Promise<MediaStreamTrack> {
-    // If a cached _micTrack exists and readyState === 'live', resolve it
-    if (this._micTrack && this._micTrack.readyState === 'live') {
+  async ensureMicTrack(): Promise<MediaStreamTrack | null> {
+    if (this._micTrack) {
       return this._micTrack;
     }
 
-    // Otherwise await navigator.mediaDevices.getUserMedia with proper audio constraints
-    const stream = await navigator.mediaDevices.getUserMedia({ 
-      audio: { 
-        echoCancellation: true, 
-        noiseSuppression: true, 
-        autoGainControl: false 
-      } 
-    });
-    const track = stream.getAudioTracks()[0];
-    
-    if (!track) {
-      throw new Error('No audio track found in microphone stream');
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { 
+          echoCancellation: true, 
+          noiseSuppression: true, 
+          autoGainControl: false 
+        }
+      });
+      
+      const track = stream.getAudioTracks()[0];
+      if (!track) {
+        throw new Error('No audio track found in stream');
+      }
+
+      // Store the stream for analyzer creation
+      this.micStream = stream;
+      
+      // Always ensure mic analyzer is created, even if AudioContext didn't exist yet
+      this.ensureMicAnalyzer();
+      
+      this._micTrack = track;
+      
+      // Log device info
+      const settings = track.getSettings();
+      logInfo('[UnifiedAudio] Microphone track ready', { 
+        deviceId: settings.deviceId, 
+        label: settings.label,
+        sampleRate: settings.sampleRate 
+      });
+      
+      // Notify mic track is ready if we have one
+      if (this.config.onMicTrackReady && this._micTrack) {
+        this.config.onMicTrackReady(this._micTrack);
+      }
+
+      return track;
+    } catch (error) {
+      logError('[UnifiedAudio] Failed to get microphone track:', error);
+      this.config.onError?.(error as Error);
+      throw error;
     }
+  }
 
-    // Store the stream for getMicStream() to return
-    this.micStream = stream;
-
-    // Create/attach the micAnalyser if not already created
-    if (this.audioContext && !this.micAnalyzer) {
-      this.micSource = this.audioContext.createMediaStreamSource(stream);
+  // Ensure mic analyzer is created and wired
+  private ensureMicAnalyzer(): void {
+    if (this.micAnalyzer) return; // Already exists
+    
+    if (!this.audioContext) {
+      // Create AudioContext if it doesn't exist
+      this.audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)({ 
+        sampleRate: 24000 
+      });
+      logInfo('[UnifiedAudio] AudioContext created during mic analyzer setup');
+    }
+    
+    if (this.micStream && this.audioContext) {
+      this.micSource = this.audioContext.createMediaStreamSource(this.micStream);
       this.micAnalyzer = this.audioContext.createAnalyser();
       this.micAnalyzer.fftSize = 256;
       this.micAnalyzer.smoothingTimeConstant = 0.8;
       this.micSource.connect(this.micAnalyzer);
-      logInfo('[UnifiedAudio] Microphone analyzer ready');
+      logInfo('[UnifiedAudio] Microphone analyzer created and wired');
     }
-
-    // Store in _micTrack
-    this._micTrack = track;
-    
-    // Add an ended listener that clears _micTrack so we can re-request if the device changes
-    track.addEventListener('ended', () => {
-      this._micTrack = null;
-      logInfo('[UnifiedAudio] Mic track ended, cleared from cache');
-    });
-
-    // Log device information
-    const deviceId = track.getSettings?.()?.deviceId;
-    const label = track.label;
-    logInfo('[UnifiedAudio] Mic track created', { deviceId, label });
-
-    // Notify mic track is ready if callback provided
-    if (this.config.onMicTrackReady) {
-      this.config.onMicTrackReady(track);
-    }
-
-    return track;
-  } catch (error) {
-    logError('[UnifiedAudio] Failed to get microphone track:', error);
-    this.config.onError?.(error as Error);
-    throw error;
   }
 
   getMicTrack(): MediaStreamTrack | null {
@@ -133,14 +144,12 @@ export class UnifiedAudioPipeline {
   }
 
   async initialize(): Promise<void> {
-    if (this._isInitialized || this.isCleaningUp) {
+    if (this._isInitialized) {
       return;
     }
 
     try {
-      logInfo('[UnifiedAudio] Initializing pipeline');
-      
-      // Create AudioContext after user gesture (this should be called from a user action)
+      // Create AudioContext if needed
       if (!this.audioContext) {
         this.audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)({ 
           sampleRate: 24000 
@@ -148,58 +157,35 @@ export class UnifiedAudioPipeline {
         logInfo('[UnifiedAudio] AudioContext created');
       }
 
-      // If micStream exists but micAnalyzer is null, create it now
-      if (this.micStream && !this.micAnalyzer) {
-        this.micSource = this.audioContext.createMediaStreamSource(this.micStream);
-        this.micAnalyzer = this.audioContext.createAnalyser();
-        this.micAnalyzer.fftSize = 256;
-        this.micAnalyzer.smoothingTimeConstant = 0.8;
-        this.micSource.connect(this.micAnalyzer);
-        logInfo('[UnifiedAudio] Microphone analyzer created during initialize');
+      // Create TTS element if needed
+      if (!this.ttsEl) {
+        this.ttsEl = document.createElement('audio');
+        this.ttsEl.preload = 'auto';
+        this.ttsEl.volume = 1.0;
+        logInfo('[UnifiedAudio] TTS element created');
       }
 
-      // Create TTS audio element - maintain ONE across the session
-      if (!this.ttsEl) {
-        this.ttsEl = new Audio();
-        this.ttsEl.preload = "auto";
-        this.ttsEl.crossOrigin = "anonymous";
-        this.ttsEl.addEventListener("canplay", () => {
-          this.aiReady = true;
-          logInfo('[UnifiedAudio] TTS element ready for playback');
-        });
-        this.ttsEl.addEventListener("ended", () => {
-          try { 
-            this.stopBargeInMonitoring(); 
-            // Cleanup object URL when audio ends
-            if (this.ttsEl?.src && this.ttsEl.src.startsWith('blob:')) {
-              URL.revokeObjectURL(this.ttsEl.src);
-            }
-          } catch {}
-        });
-        this.ttsEl.addEventListener("error", (e) => {
-          console.error("[UnifiedAudio] TTS element error", e);
-        });
-
-        // Bind TTS event handlers as specified
-        this.ttsEl.onplay = () => console.info('[TTS] start', Date.now());
-        this.ttsEl.onended = () => console.info('[TTS] end', Date.now());
-        this.ttsEl.onpause = () => console.info('[TTS] pause', Date.now());
-
-        logInfo('[UnifiedAudio] TTS audio element created');
+      // Re-check and wire mic analyzer if missing
+      if (this.micStream && !this.micAnalyzer) {
+        this.ensureMicAnalyzer();
       }
 
       // Initialize speech recognition
-      this.speech = createEnhancedSpeech({
-        onFinal: (text: string) => this.config.onFinalResult?.(text),
-        onBargeIn: this.config.onBargeIn
-      });
-
       if (!this.speech) {
-        throw new Error('Failed to create enhanced speech recognition');
+        this.speech = createEnhancedSpeech({
+          onStart: () => this.config.onSpeechStart?.(),
+          onEnd: () => this.config.onSpeechEnd?.(),
+          onResult: (text, confidence) => this.config.onSpeechResult?.(text, confidence),
+          onFinalResult: (text, confidence) => this.config.onFinalResult?.(text, confidence),
+          onError: (error) => this.config.onSpeechError?.(error),
+          onBargeIn: () => this.config.onBargeIn?.(),
+          onQuietGateStart: () => this.config.onQuietGateStart?.(),
+          onQuietGateEnd: () => this.config.onQuietGateEnd?.(),
+          onQuietGateCancel: () => this.config.onQuietGateCancel?.(),
+          onHealth: (health) => this.config.onHealth?.(health)
+        });
+        logInfo('[UnifiedAudio] Speech recognition initialized');
       }
-
-      // Start health monitoring
-      this.startHealthMonitoring();
 
       this._isInitialized = true;
       logInfo('[UnifiedAudio] Pipeline initialized successfully');
@@ -717,13 +703,15 @@ export function isTestPipeline(): boolean {
 // Get pipeline instance with test flag
 export function getTestPipeline(config?: UnifiedAudioPipelineConfig): UnifiedAudioPipeline {
   const testConfig = { ...config, isTestPipeline: true };
-  return getUnifiedAudioPipeline(testConfig);
+  // Always create a new instance for testing, don't reuse singleton
+  return new UnifiedAudioPipeline(testConfig);
 }
 
 export function cleanupUnifiedAudioPipeline(): void {
-  if (unifiedPipeline) {
+  if (unifiedPipeline && !unifiedPipeline.config?.isTestPipeline) {
     unifiedPipeline.cleanup();
     unifiedPipeline = null;
+    logInfo('[UnifiedAudio] Singleton pipeline cleaned up');
   }
 }
 

@@ -346,8 +346,8 @@ function SessionInner() {
         setPublishedTrackId(publication.trackSid);
         logInfo(`[Session] Published track: ${publication.trackSid}`);
         
-        // Log track IDs for debugging - should be equal since we're using the same track
-        logInfo(`[Mic/Publish] ids {micTrackId: ${micTrack.id}, publishedTrackId: ${publication.trackSid}, equal: ${micTrack.id === publication.trackSid}}`);
+        // Log track IDs for debugging - these are different identifiers
+        logInfo(`[Session] Track IDs - micTrack.id: ${micTrack.id}, publication.trackSid: ${publication.trackSid}`);
       }
       
       logInfo("[Session] Connected to LiveKit room");
@@ -380,6 +380,9 @@ function SessionInner() {
       unifiedPipeline.current = null;
     }
     
+    // Clear the module singleton as well
+    cleanupUnifiedAudioPipeline();
+    
     // Disconnect message dispatcher
     disconnectMessageDispatcher();
     
@@ -390,7 +393,7 @@ function SessionInner() {
     setTurns([]);
     setExternalTurn(null);
     
-    logInfo("[Session] Call ended");
+    logInfo("[Session] Call ended and pipeline cleaned up");
   };
 
   // === CHAT HANDLERS ===
@@ -486,7 +489,14 @@ function SessionInner() {
 
           {/* Scenario Picker */}
           <div className="mb-6">
-            <ScenarioPicker onChange={() => {}} />
+            <ScenarioPicker 
+              value={scenarioId} 
+              onChange={(newScenarioId) => {
+                logInfo(`[Session] Scenario changed from ${scenarioId} to ${newScenarioId}`);
+                // Update the URL to trigger a rerender with the new scenario
+                router.push(`/session?mode=${mode}&mock=${isMock ? '1' : '0'}&scenario=${newScenarioId}`);
+              }} 
+            />
           </div>
 
           {/* Main Content */}
