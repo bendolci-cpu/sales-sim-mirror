@@ -50,6 +50,10 @@ export default function BudgetBadge() {
   const max = data?.max ?? 0;
   const allowed = data?.allowed ?? true;
 
+  // Debug logging
+  console.log('[BudgetBadge] Data:', data);
+  console.log('[BudgetBadge] Usage:', usage, 'Max:', max, 'Allowed:', allowed);
+
   return (
     <div
       className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs ${
