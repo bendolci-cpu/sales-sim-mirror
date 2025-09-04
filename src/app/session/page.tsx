@@ -76,15 +76,22 @@ function SessionInner() {
         onBargeIn: () => {
           logInfo('[Session] Barge-in triggered');
         },
-        onTTSStart: (turnId) => {
-          logInfo(`[Session] TTS started for turn: ${turnId}`);
+        onTTSStart: (text) => {
+          logInfo(`[Session] TTS started: "${text}"`);
         },
-        onTTSEnd: (turnId) => {
-          logInfo(`[Session] TTS ended for turn: ${turnId}`);
+        onTTSEnd: (text) => {
+          logInfo(`[Session] TTS ended: "${text}"`);
           // Don't auto-end the call - keep it connected
         },
         onTTSError: (error) => {
           logError('[Session] TTS error:', error);
+        },
+        onFinalResult: (text) => {
+          logInfo(`[Session] Speech recognition final result: "${text}"`);
+          // Handle speech recognition results here
+        },
+        onError: (error) => {
+          logError('[Session] Speech recognition error:', error);
         }
       });
     }
@@ -154,7 +161,7 @@ function SessionInner() {
       // Play TTS if connected
       if (voiceConnected && !isMock && unifiedPipeline.current) {
         try {
-          await unifiedPipeline.current.playTTS(aiResponse, aiTurn.id);
+          await unifiedPipeline.current.playTTS(aiResponse, `/api/tts?text=${encodeURIComponent(aiResponse)}`);
         } catch (error) {
           logError(`[Session] TTS failed for turn ${aiTurn.id}:`, error);
         }
@@ -230,7 +237,7 @@ function SessionInner() {
         if (!isMock) {
           try {
             logInfo("[Session] Starting TTS for greeting...");
-            await unifiedPipeline.current.playTTS(greeting, greetingTurn.id);
+            await unifiedPipeline.current.playTTS(greeting, `/api/tts?text=${encodeURIComponent(greeting)}`);
             logInfo("[Session] Greeting TTS completed");
           } catch (error) {
             logError(`[Session] Greeting TTS failed:`, error);
@@ -262,13 +269,18 @@ function SessionInner() {
       livekitRoom.current = new Room();
       
       // Fetch LiveKit token from our API
-      const tokenResponse = await fetch('/api/livekit-token?room=sales-sim&identity=test-user');
-      if (!tokenResponse.ok) {
-        throw new Error(`Failed to get LiveKit token: ${tokenResponse.status}`);
+      const res = await fetch("/api/livekit-token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roomName: "sales-sim", identity: "test-user" }),
+      });
+      
+      if (!res.ok) {
+        throw new Error(`Token fetch failed: ${res.status}`);
       }
       
-      const tokenData = await tokenResponse.json();
-      if (!tokenData.token) {
+      const { token } = await res.json();
+      if (!token) {
         throw new Error('No token received from LiveKit token API');
       }
       
@@ -278,7 +290,7 @@ function SessionInner() {
         throw new Error('NEXT_PUBLIC_LIVEKIT_URL not configured');
       }
       
-      await livekitRoom.current.connect(roomUrl, tokenData.token);
+      await livekitRoom.current.connect(roomUrl, token);
       
       // Use the helper function to publish the pipeline's mic track
       const publication = await connectToLiveKitWithMicTrack(livekitRoom.current, pipelineMicTrack);

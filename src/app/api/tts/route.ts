@@ -1,64 +1,64 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
-  const text = searchParams.get('text');
-  
-  if (!text) {
-    return NextResponse.json({ error: 'Text parameter is required' }, { status: 400 });
-  }
+  const text = searchParams.get('text') || 'Hello world';
   
   try {
-    // Generate a short audio buffer instead of returning a 404 URL
+    // For now, return a simple beep sound
+    // In production, this would call your actual TTS service
     const audioBuffer = generateMockAudioBuffer(text);
-    const blob = new Blob([audioBuffer], { type: 'audio/wav' });
-    const audioUrl = URL.createObjectURL(blob);
     
-    return NextResponse.json({ 
-      audioUrl: audioUrl,
-      text: text,
-      duration: text.length * 50 // Rough estimate: 50ms per character
+    return new NextResponse(audioBuffer, {
+      headers: {
+        'Content-Type': 'audio/wav',
+        'Content-Length': audioBuffer.byteLength.toString(),
+      },
     });
-    
   } catch (error) {
-    console.error('TTS API error:', error);
-    return NextResponse.json({ error: 'TTS generation failed' }, { status: 500 });
+    console.error('TTS error:', error);
+    return NextResponse.json(
+      { error: 'Failed to generate TTS audio' },
+      { status: 500 }
+    );
   }
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const text = body.text || '';
-    
+    const { text } = await request.json();
     if (!text) {
-      return NextResponse.json({ error: 'Text is required' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Text is required' },
+        { status: 400 }
+      );
     }
     
-    // Generate a short audio buffer instead of returning a 404 URL
     const audioBuffer = generateMockAudioBuffer(text);
-    const blob = new Blob([audioBuffer], { type: 'audio/wav' });
-    const audioUrl = URL.createObjectURL(blob);
     
-    return NextResponse.json({ 
-      url: audioUrl,
-      text: text
+    return new NextResponse(audioBuffer, {
+      headers: {
+        'Content-Type': 'audio/wav',
+        'Content-Length': audioBuffer.byteLength.toString(),
+      },
     });
-    
   } catch (error) {
-    console.error('TTS API error:', error);
-    return NextResponse.json({ error: 'TTS generation failed' }, { status: 500 });
+    console.error('TTS error:', error);
+    return NextResponse.json(
+      { error: 'Failed to generate TTS audio' },
+      { status: 500 }
+    );
   }
 }
 
-// Generate a simple audio buffer for mock TTS
 function generateMockAudioBuffer(text: string): ArrayBuffer {
   // Create a simple sine wave audio buffer
   const sampleRate = 24000;
   const duration = Math.max(0.5, text.length * 0.05); // 50ms per character, minimum 500ms
   const numSamples = Math.floor(sampleRate * duration);
   
-  // Create a simple beep sound
   const frequency = 440; // A4 note
   const amplitude = 0.3;
   

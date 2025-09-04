@@ -1,42 +1,32 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { AccessToken } from 'livekit-server-sdk';
+import { NextResponse } from "next/server";
+import { AccessToken } from "livekit-server-sdk";
 
-export async function GET(request: NextRequest) {
-  const { searchParams } = new URL(request.url);
-  const room = searchParams.get('room') || 'sales-sim';
-  const identity = searchParams.get('identity') || 'test-user';
-  
-  const apiKey = process.env.LIVEKIT_API_KEY;
-  const apiSecret = process.env.LIVEKIT_API_SECRET;
-  
-  if (!apiKey || !apiSecret) {
-    return NextResponse.json(
-      { error: 'LiveKit API credentials not configured' },
-      { status: 500 }
-    );
-  }
-  
+export async function POST(req: Request) {
   try {
-    const at = new AccessToken(apiKey, apiSecret, {
-      identity: identity,
-      name: identity,
-    });
+    const { roomName, identity } = await req.json();
+    if (!roomName || !identity) {
+      return NextResponse.json({ error: "Missing roomName or identity" }, { status: 400 });
+    }
     
+    const url = process.env.LIVEKIT_API_URL!;
+    const key = process.env.LIVEKIT_API_KEY!;
+    const secret = process.env.LIVEKIT_API_SECRET!;
+    
+    if (!url || !key || !secret) {
+      return NextResponse.json({ error: "LiveKit server not configured" }, { status: 500 });
+    }
+
+    const at = new AccessToken(key, secret, { identity });
     at.addGrant({
-      room: room,
       roomJoin: true,
+      room: roomName,
       canPublish: true,
       canSubscribe: true,
     });
-    
-    const token = at.toJwt();
-    
+
+    const token = await at.toJwt();
     return NextResponse.json({ token });
-  } catch (error) {
-    console.error('LiveKit token generation error:', error);
-    return NextResponse.json(
-      { error: 'Failed to generate LiveKit token' },
-      { status: 500 }
-    );
+  } catch (e: any) {
+    return NextResponse.json({ error: e?.message || "Token error" }, { status: 500 });
   }
 }
