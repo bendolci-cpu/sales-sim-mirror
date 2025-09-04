@@ -258,11 +258,6 @@ export class UnifiedAudioPipeline {
     } catch (error) {
       logError(`[UnifiedAudio] TTS failed for turn ${turnId}:`, error);
       this.config.onTTSError?.(error as Error);
-    } finally {
-      // Only stop TTS if this is still the current turn (not aborted)
-      if (this.currentTTSTurnId === turnId) {
-        this.stopTTS();
-      }
     }
   }
   
@@ -274,7 +269,16 @@ export class UnifiedAudioPipeline {
     
     // Abort the controller if it exists
     if (this.currentTTSAbortController) {
-      this.currentTTSAbortController.abort();
+      try {
+        this.currentTTSAbortController.abort();
+      } catch (error) {
+        // AbortError during stopTTS is expected, not an error
+        if (error instanceof Error && error.name === 'AbortError') {
+          logDebug('[UnifiedAudio] TTS abort during stopTTS (expected)');
+        } else {
+          logWarn('[UnifiedAudio] Unexpected error during TTS abort:', error);
+        }
+      }
       this.currentTTSAbortController = null;
     }
     
@@ -454,13 +458,14 @@ export class UnifiedAudioPipeline {
       this.audioElement = null;
     }
     
-    // Clean up audio context
-    if (this.audioContext) {
-      this.audioContext.close();
-      this.audioContext = null;
+    // Only close AudioContext if we're completely shutting down
+    // Keep it alive during HMR and normal session operations
+    if (this.audioContext && this.audioContext.state !== 'closed') {
+      // Don't close the context immediately - let it finish any ongoing operations
+      logDebug('[UnifiedAudio] Preserving AudioContext for ongoing operations');
     }
     
-    // Clear analyzers
+    // Clear analyzers but keep the context
     this.micAnalyzer = null;
     this.aiAnalyzer = null;
     this.micSource = null;
@@ -470,6 +475,21 @@ export class UnifiedAudioPipeline {
     this.isCleaningUp = false;
     
     logInfo('[UnifiedAudio] Pipeline cleanup complete');
+  }
+  
+  // Force cleanup when session is truly ending (not HMR)
+  forceCleanup(): void {
+    logInfo('[UnifiedAudio] Force cleanup - closing AudioContext');
+    
+    // First do normal cleanup
+    this.cleanup();
+    
+    // Then close the AudioContext
+    if (this.audioContext && this.audioContext.state !== 'closed') {
+      this.audioContext.close();
+      this.audioContext = null;
+      logInfo('[UnifiedAudio] AudioContext closed');
+    }
   }
   
   // === PUBLIC API ===

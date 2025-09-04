@@ -311,8 +311,10 @@ function SessionInner() {
     // Disconnect message dispatcher
     setMessageDispatcherConnected(false);
     
-    // Cleanup unified pipeline
-    cleanupUnifiedAudioPipeline();
+    // Force cleanup unified pipeline (close AudioContext)
+    if (unifiedPipeline.current) {
+      unifiedPipeline.current.forceCleanup();
+    }
     
     setVoiceConnected(false);
     setMicStream(null);
@@ -365,8 +367,9 @@ function SessionInner() {
       unregisterMessageHandler(handleMessageDispatcher);
       
       // Only cleanup pipeline if call is not active (HMR-safe)
-      if (!voiceConnected) {
-        cleanupUnifiedAudioPipeline();
+      if (!voiceConnected && unifiedPipeline.current) {
+        // Use regular cleanup for HMR - preserves AudioContext
+        unifiedPipeline.current.cleanup();
       }
     };
   }, [turns, voiceConnected]); // Include voiceConnected in dependency to access latest state
