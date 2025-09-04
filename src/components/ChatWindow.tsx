@@ -124,7 +124,7 @@ export default function ChatWindow({ visible = true, seedMessages, voiceConnecte
         <h2 className="text-sm font-semibold text-gray-900">Chat</h2>
       </div>
 
-            <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-3">
+      <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-3">
         {messages.map(message => (
           <div key={message.id} className={`flex ${message.sender === "user" ? "justify-end" : "justify-start"}`}>
             <div
