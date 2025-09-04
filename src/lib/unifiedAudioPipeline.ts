@@ -31,6 +31,7 @@ export class UnifiedAudioPipeline {
   private bargeInInterval: NodeJS.Timeout | null = null;
   private bargeInTimer: NodeJS.Timeout | null = null;
   private healthInterval: NodeJS.Timeout | null = null;
+  private restartDebounceTimer: NodeJS.Timeout | null = null;
   private _isInitialized: boolean = false;
   private isCleaningUp: boolean = false;
   private config: UnifiedAudioPipelineConfig;
@@ -244,22 +245,13 @@ export class UnifiedAudioPipeline {
     this.startBargeInMonitoring();
 
     try {
-      // Check if we should use client TTS fallback
-      if (process.env.NEXT_PUBLIC_TTS_MODE === 'client' && typeof window !== 'undefined' && window.speechSynthesis) {
-        await this.playClientTTS(text, turnId);
-        return;
-      }
-
-      // Try server TTS
+      // Always use server TTS - no more SpeechSynthesis fallback
       const res = await fetch(`/api/tts?text=${encodeURIComponent(text)}`, { 
         signal: this.ttsAbortController.signal 
       });
       
       if (!res.ok || res.status === 204) {
-        // Server TTS failed or returned no content, fall back to client
-        logWarn('[UnifiedAudio] Server TTS failed, falling back to client TTS');
-        await this.playClientTTS(text, turnId);
-        return;
+        throw new Error(`Server TTS failed: ${res.status} ${res.statusText}`);
       }
       
       const data = await res.arrayBuffer();
@@ -267,7 +259,7 @@ export class UnifiedAudioPipeline {
       const blob = new Blob([data], { type: mime });
       const objectUrl = URL.createObjectURL(blob);
 
-      // Wire analyzers before playback (only for server TTS)
+      // Ensure AI analyzer is created and wired
       if (this.audioContext && this.ttsEl) {
         if (!this.aiSource) {
           this.aiSource = this.audioContext.createMediaElementSource(this.ttsEl);
@@ -304,44 +296,12 @@ export class UnifiedAudioPipeline {
       
       logInfo('[UnifiedAudio] TTS finished');
       
-      // Restart speech recognition after TTS finishes
-      this.restartSpeechRecognition();
+      // Debounced restart of speech recognition after TTS finishes
+      this.debouncedRestartSpeechRecognition();
     }
   }
 
-  private async playClientTTS(text: string, turnId: string): Promise<void> {
-    if (typeof window === 'undefined' || !window.speechSynthesis) {
-      throw new Error('Client TTS not available');
-    }
 
-    // In client TTS mode, set aiAnalyzer to null since we don't have audio element
-    if (process.env.NEXT_PUBLIC_TTS_MODE === 'client') {
-      this.aiAnalyser = null;
-    }
-
-    return new Promise((resolve, reject) => {
-      const utterance = new SpeechSynthesisUtterance(text);
-      
-      utterance.onstart = () => {
-        logInfo('[UnifiedAudio] TTS audio element started playback (client)');
-      };
-      
-      utterance.onend = () => {
-        logInfo(`[TTS] end ${Date.now()}`);
-        logInfo('[UnifiedAudio] TTS finished');
-        // Only resolve - let the finally block in playTTS handle side-effects
-        resolve();
-      };
-      
-      utterance.onerror = (event: SpeechSynthesisErrorEvent) => {
-        logError('[UnifiedAudio] Client TTS error:', event);
-        // Only reject with error - let the finally block in playTTS handle side-effects
-        reject(new Error(`Client TTS error: ${event.error}`));
-      };
-
-      window.speechSynthesis.speak(utterance);
-    });
-  }
 
   stopTTS(): void {
     // Never throw if no abort controller
@@ -555,6 +515,12 @@ export class UnifiedAudioPipeline {
       this.healthInterval = null;
     }
 
+    // Clear restart debounce timer
+    if (this.restartDebounceTimer) {
+      clearTimeout(this.restartDebounceTimer);
+      this.restartDebounceTimer = null;
+    }
+
     // Don't throw if there's no controller
     try { 
       this.stopTTS(); 
@@ -729,10 +695,29 @@ export class UnifiedAudioPipeline {
   }
 
   private restartSpeechRecognition(): void {
-    if (this.speech) {
-      // Let the enhanced speech guard prevent duplicates
-      this.speech.start();
+    if (this.speech && !this.speech.isRunning()) {
+      // Guard against InvalidStateError - only start if not already running
+      try {
+        this.speech.start();
+      } catch (error: any) {
+        if (error.name === 'InvalidStateError') {
+          logDebug('[UnifiedAudio] Ignoring InvalidStateError - recognition already running');
+        } else {
+          logError('[UnifiedAudio] Failed to restart speech recognition:', error);
+        }
+      }
     }
+  }
+
+  private debouncedRestartSpeechRecognition(): void {
+    // Debounce restart to prevent rapid successive calls
+    if (this.restartDebounceTimer) {
+      clearTimeout(this.restartDebounceTimer);
+    }
+    
+    this.restartDebounceTimer = setTimeout(() => {
+      this.restartSpeechRecognition();
+    }, 100); // 100ms debounce
   }
 }
 
@@ -791,3 +776,4 @@ export function useAudioDebugOverlay() {
 
   return debugInfo;
 }
+

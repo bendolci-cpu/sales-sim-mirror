@@ -25,8 +25,7 @@ export default function BudgetBadge() {
   const prevDataRef = useRef<BudgetResp | null>(null);
   
   // Check if debug logging is enabled
-  const isDebugEnabled = process.env.NODE_ENV === 'development' && 
-    process.env.NEXT_PUBLIC_DEBUG_BUDGET === 'true';
+  const isDebugEnabled = process.env.NEXT_PUBLIC_DEBUG_BUDGET === '1';
 
   // Memoized fetch function to prevent recreation on every render
   const fetchBudget = useCallback(async () => {

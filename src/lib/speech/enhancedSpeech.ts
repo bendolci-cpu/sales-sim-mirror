@@ -1,11 +1,12 @@
 // CloserCoach-style speech recognition with continuous ASR + VAD gates
-// One recognizer instance kept warm, no auto-restart loops
+// One recognizer instance kept warm, auto-restarting around TTS
 import { logInfo, logDebug, logError, logWarn } from "@/lib/logger";
 import { sendMessage } from "@/lib/messageDispatcher";
 
 export interface EnhancedSpeechControls {
   start: () => void;
   stop: () => void;
+  isRunning: () => boolean;
   isActive: () => boolean;
   startQuietGate: () => void;
   cancelQuietGate: () => void;
@@ -61,9 +62,10 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
   
   // Single recognizer instance kept warm
   let rec: any = null;
+  let isRunning = false; // New: tracks if recognition is actually running
   let active = false;
   let starting = false;
-  let stoppedByApp = false;
+  let requestedStop = false; // New: internal flag for requested stops
   let endedExternally = false;
   let restartCooldown = false;
   let restartCooldownTimer: NodeJS.Timeout | null = null;
@@ -75,6 +77,9 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
   // Speech state
   let ttsPlaying = false;
   let isGating = false; // Whether ASR is currently gated due to TTS
+  
+  // Interim text buffer for continuous ASR
+  let interimBuffer = '';
   
   // Duplicate suppression
   const recentUtterances = new Map<string, number>(); // hash -> timestamp
@@ -106,36 +111,42 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
     logInfo('[EnhancedSpeech] Created recognizer instance');
   }
   
-  // Start recognition (only if not already active or starting)
+  // Start recognition (only if not already running)
   async function startRecognition() {
-    if (active || starting || restartCooldown) {
-      logDebug('[EnhancedSpeech] Recognition already active, starting, or in cooldown');
+    if (isRunning || starting || restartCooldown) {
+      logDebug('[EnhancedSpeech] Recognition already running, starting, or in cooldown');
       return;
     }
     
     starting = true;
+    requestedStop = false; // Clear stop flag when starting
     
     try {
       createRecognizer();
       
       rec.onstart = () => {
+        isRunning = true;
         active = true;
         starting = false;
         endedExternally = false;
-        stoppedByApp = false;
         logInfo('[EnhancedSpeech] Recognition started');
+        handlers.onSpeechStart?.();
       };
       
       rec.onend = () => {
+        isRunning = false;
         active = false;
         starting = false;
         logInfo('[EnhancedSpeech] Recognition ended');
         
-        // Only restart if not ended externally and not in cooldown
-        if (!endedExternally && !restartCooldown && !stoppedByApp) {
-          logInfo('[EnhancedSpeech] Auto-restarting recognition');
+        // Clear interim buffer on end
+        interimBuffer = '';
+        
+        // Only auto-restart if not ended externally, not in cooldown, and not requested stop
+        if (!endedExternally && !restartCooldown && !requestedStop && !ttsPlaying) {
+          logInfo('[EnhancedSpeech] Auto-restarting recognition (not during TTS)');
           setTimeout(() => {
-            if (!endedExternally && !restartCooldown && !stoppedByApp) {
+            if (!endedExternally && !restartCooldown && !requestedStop && !ttsPlaying) {
               startRecognition();
             }
           }, 100);
@@ -176,9 +187,10 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
         
         if (!transcript) return;
         
-        // Handle interim results
+        // Handle interim results - buffer them
         if (!isFinal) {
-          // Only show interim when not in TTS or quiet gate
+          interimBuffer = transcript;
+          // Only emit interim when not in TTS or quiet gate
           if (!ttsPlaying && !isInQuietGate) {
             handlers.onInterim?.(transcript);
           }
@@ -187,6 +199,8 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
         
         // Handle final results
         processFinalResult(transcript, confidence);
+        // Clear interim buffer after final result
+        interimBuffer = '';
       };
       
       try {
@@ -234,6 +248,7 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
     // Skip if too short and low confidence
     if (duration < MIN_DURATION_DROP && confidence < MIN_CONFIDENCE) {
       logDebug(`[EnhancedSpeech] Dropping short/low-confidence: "${transcript}" (${duration}ms, ${confidence.toFixed(2)})`);
+      handlers.onLowConfidence?.(transcript, confidence);
       return;
     }
     
@@ -294,23 +309,23 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
     
     for (const word of words) {
       if (DOMAIN_KEYWORDS.includes(word)) {
-        boost += 0.05; // 5% boost per domain keyword
+        boost += 0.05; // Small boost per domain word
       }
     }
     
     return Math.min(1.0, baseConfidence + boost);
   }
   
-  // Check if transcript is a meta phrase
-  function isMetaPhrase(transcript: string): boolean {
-    const lower = transcript.toLowerCase().trim();
+  // Check if text is a meta phrase
+  function isMetaPhrase(text: string): boolean {
+    const lower = text.toLowerCase().trim();
     return META_PHRASES.some(phrase => lower.includes(phrase));
   }
   
-  // Set TTS playing state for gating
-  function setTTSPlaying(playing: boolean) {
+  // Set TTS playing state
+  function setTTSPlayingState(playing: boolean) {
     ttsPlaying = playing;
-    isGating = playing; // Gate ASR when TTS is playing
+    isGating = playing;
     logDebug(`[EnhancedSpeech] TTS playing: ${playing}, gating: ${isGating}`);
   }
   
@@ -347,9 +362,9 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
   // Stop recognition
   function stopRecognition() {
     endedExternally = true;
-    stoppedByApp = true;
+    requestedStop = true; // Set internal stop flag
     
-    if (rec && active) {
+    if (rec && isRunning) {
       try {
         rec.stop();
       } catch (error) {
@@ -374,7 +389,7 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
   
   function logHealth() {
     const health = {
-      recognizer: active,
+      recognizer: isRunning,
       listeners: !!rec,
       mic_live: true, // Assuming mic is live if we're here
       tts_playing: ttsPlaying,
@@ -394,12 +409,13 @@ export function createEnhancedSpeech(handlers: Handlers): EnhancedSpeechControls
   return {
     start: startRecognition,
     stop: stopRecognition,
+    isRunning: () => isRunning, // New: getter for isRunning state
     isActive: () => active,
     startQuietGate,
     cancelQuietGate,
-    setTTSPlaying,
+    setTTSPlaying: setTTSPlayingState,
     getHealthStatus: () => ({
-      recognizer: active,
+      recognizer: isRunning,
       listeners: !!rec,
       mic_live: true,
       tts_playing: ttsPlaying,
