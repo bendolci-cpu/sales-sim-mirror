@@ -16,6 +16,7 @@ export default function AudioDeviceSelector() {
   const [selectedOutput, setSelectedOutput] = useState<string>('');
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<string>('');
+  const [outputDeviceError, setOutputDeviceError] = useState<string>('');
 
   useEffect(() => {
     loadDevices();
@@ -54,6 +55,35 @@ export default function AudioDeviceSelector() {
       }
     } catch (error) {
       console.error('Failed to load audio devices:', error);
+    }
+  };
+
+  const handleOutputDeviceChange = async (deviceId: string) => {
+    setSelectedOutput(deviceId);
+    setOutputDeviceError('');
+    
+    try {
+      const pipeline = getCurrentPipeline();
+      if (pipeline) {
+        await pipeline.setOutputDevice(deviceId);
+        setTestResult(`✅ Output device changed to: ${outputDevices.find(d => d.deviceId === deviceId)?.label || deviceId}`);
+      } else {
+        // Test with a local audio element if no pipeline exists
+        const testAudio = new Audio();
+        if (!('setSinkId' in testAudio)) {
+          throw new Error('setSinkId not supported in this browser');
+        }
+        await (testAudio as any).setSinkId(deviceId);
+        setTestResult(`✅ Output device changed to: ${outputDevices.find(d => d.deviceId === deviceId)?.label || deviceId}`);
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      if (errorMessage.includes('setSinkId not supported')) {
+        setOutputDeviceError('⚠️ Output device selection not supported in this browser. Use your system audio settings instead.');
+      } else {
+        setOutputDeviceError(`❌ Failed to change output device: ${errorMessage}`);
+      }
+      console.error('Failed to change output device:', error);
     }
   };
 
@@ -187,7 +217,7 @@ export default function AudioDeviceSelector() {
           </label>
           <select
             value={selectedOutput}
-            onChange={(e) => setSelectedOutput(e.target.value)}
+            onChange={(e) => handleOutputDeviceChange(e.target.value)}
             className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
             {outputDevices.map((device) => (
@@ -203,6 +233,9 @@ export default function AudioDeviceSelector() {
           >
             Test Audio Output
           </button>
+          {outputDeviceError && (
+            <p className="mt-2 text-sm text-red-500">{outputDeviceError}</p>
+          )}
         </div>
 
         {/* Test Results */}

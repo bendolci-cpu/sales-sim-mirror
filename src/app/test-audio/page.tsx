@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import AudioDeviceSelector from '@/components/AudioDeviceSelector';
-import { getUnifiedAudioPipeline, getCurrentPipeline } from '@/lib/unifiedAudioPipeline';
+import { getTestPipeline, getCurrentPipeline, cleanupUnifiedAudioPipeline, isTestPipeline } from '@/lib/unifiedAudioPipeline';
 
 export default function TestAudioPage() {
   const router = useRouter();
@@ -12,14 +12,39 @@ export default function TestAudioPage() {
   const [isTestingBargeIn, setIsTestingBargeIn] = useState(false);
   const [testResults, setTestResults] = useState<string[]>([]);
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
+  const [isPipelineReset, setIsPipelineReset] = useState(false);
 
   const addResult = (result: string) => {
     setTestResults(prev => [...prev, `${new Date().toLocaleTimeString()}: ${result}`]);
   };
 
+  const resetPipeline = () => {
+    setIsPipelineReset(true);
+    addResult('🔄 Resetting audio pipeline...');
+    
+    try {
+      // Force cleanup of current pipeline
+      cleanupUnifiedAudioPipeline();
+      addResult('✅ Pipeline reset complete');
+      
+      // Clear any local state
+      setMicStream(null);
+      setMicLevel(0);
+      setIsTestingMic(false);
+      setIsTestingBargeIn(false);
+      
+      setTimeout(() => setIsPipelineReset(false), 1000);
+    } catch (error) {
+      addResult(`❌ Pipeline reset failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      setIsPipelineReset(false);
+    }
+  };
+
   const testMicrophone = async () => {
     setIsTestingMic(true);
     addResult('Starting microphone test...');
+    
+    let localAudioContext: AudioContext | null = null;
     
     try {
       // Get microphone stream directly
@@ -32,6 +57,9 @@ export default function TestAudioPage() {
         // Test levels for 3 seconds
         const pipeline = getCurrentPipeline();
         const audioContext = pipeline ? pipeline.getOrCreateAudioContext() : new AudioContext();
+        if (!pipeline) {
+          localAudioContext = audioContext;
+        }
         const source = audioContext.createMediaStreamSource(stream);
         const analyzer = audioContext.createAnalyser();
         analyzer.fftSize = 256;
@@ -54,8 +82,8 @@ export default function TestAudioPage() {
             // Stop the stream and cleanup
             stream.getTracks().forEach(track => track.stop());
             // Only close AudioContext if we created our own (not from pipeline)
-            if (!pipeline) {
-              audioContext.close();
+            if (localAudioContext) {
+              localAudioContext.close();
             }
             setMicLevel(maxLevel);
             
@@ -85,10 +113,15 @@ export default function TestAudioPage() {
   const testAudioOutput = async () => {
     addResult('Testing audio output...');
     
+    let localAudioContext: AudioContext | null = null;
+    
     try {
       // Use shared AudioContext from UnifiedAudioPipeline
       const pipeline = getCurrentPipeline();
       const audioContext = pipeline ? pipeline.getOrCreateAudioContext() : new AudioContext();
+      if (!pipeline) {
+        localAudioContext = audioContext;
+      }
       const oscillator = audioContext.createOscillator();
       const gainNode = audioContext.createGain();
       
@@ -106,8 +139,8 @@ export default function TestAudioPage() {
       // Cleanup after tone
       setTimeout(() => {
         // Only close AudioContext if we created our own (not from pipeline)
-        if (!pipeline) {
-          audioContext.close();
+        if (localAudioContext) {
+          localAudioContext.close();
         }
       }, 1500);
     } catch (error) {
@@ -122,9 +155,11 @@ export default function TestAudioPage() {
     addResult('🎯 Starting barge-in test...');
     addResult('📢 Playing TTS - try speaking to interrupt it!');
     
+    let pipeline = null;
+    
     try {
-      // Get or create the unified audio pipeline
-      const pipeline = getUnifiedAudioPipeline({
+      // Get or create a test pipeline
+      pipeline = getTestPipeline({
         onBargeIn: () => {
           addResult('🎉 BARGED-IN SUCCESSFULLY! TTS was interrupted by your voice.');
           setIsTestingBargeIn(false);
@@ -135,6 +170,10 @@ export default function TestAudioPage() {
         },
         onTTSError: (error) => {
           addResult(`❌ TTS error: ${error.message}`);
+          setIsTestingBargeIn(false);
+        },
+        onError: (error) => {
+          addResult(`❌ Pipeline error: ${error.message}`);
           setIsTestingBargeIn(false);
         }
       });
@@ -160,6 +199,17 @@ export default function TestAudioPage() {
     } catch (error) {
       addResult(`❌ Barge-in test failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
       setIsTestingBargeIn(false);
+    } finally {
+      // Clean up test pipeline if it was created for testing
+      if (pipeline && isTestPipeline()) {
+        addResult('🧹 Cleaning up test pipeline...');
+        try {
+          pipeline.forceCleanup();
+          addResult('✅ Test pipeline cleaned up');
+        } catch (cleanupError) {
+          addResult(`⚠️ Pipeline cleanup warning: ${cleanupError instanceof Error ? cleanupError.message : 'Unknown error'}`);
+        }
+      }
     }
   };
 
@@ -258,6 +308,14 @@ export default function TestAudioPage() {
                   className="w-full px-4 py-2 bg-orange-500 text-white rounded-md hover:bg-orange-600 disabled:opacity-50"
                 >
                   {isTestingBargeIn ? 'Testing Barge-In...' : 'Test Barge-In'}
+                </button>
+                
+                <button
+                  onClick={resetPipeline}
+                  disabled={isPipelineReset}
+                  className="w-full px-4 py-2 bg-red-500 text-white rounded-md hover:bg-red-600 disabled:opacity-50"
+                >
+                  {isPipelineReset ? 'Resetting...' : 'Reset Pipeline'}
                 </button>
               </div>
 

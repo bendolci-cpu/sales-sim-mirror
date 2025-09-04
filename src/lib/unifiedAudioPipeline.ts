@@ -13,6 +13,7 @@ export interface UnifiedAudioPipelineConfig {
   onMicTrackReady?: (track: MediaStreamTrack) => void;
   onFinalResult?: (text: string, confidence?: number) => void;
   onError?: (error: Error) => void;
+  isTestPipeline?: boolean; // Added for testing
 }
 
 export class UnifiedAudioPipeline {
@@ -21,7 +22,7 @@ export class UnifiedAudioPipeline {
   private _micTrack: MediaStreamTrack | null = null;
   private micSource: MediaStreamAudioSourceNode | null = null;
   private micAnalyzer: AnalyserNode | null = null;
-  private aiSource: MediaElementAudioSourceNode | null = null;
+  private aiSource: MediaStreamAudioSourceNode | null = null;
   private aiAnalyser: AnalyserNode | null = null;
   private ttsEl: HTMLAudioElement | null = null;
   private ttsAbortController: AbortController | null = null;
@@ -33,6 +34,7 @@ export class UnifiedAudioPipeline {
   private _isInitialized: boolean = false;
   private isCleaningUp: boolean = false;
   private config: UnifiedAudioPipelineConfig;
+  private currentTurnId: string | null = null; // Track current TTS turn
   
   // Barge-in state
   private aiReady: boolean = false;
@@ -104,6 +106,10 @@ export class UnifiedAudioPipeline {
     }
 
     return track;
+  } catch (error) {
+    logError('[UnifiedAudio] Failed to get microphone track:', error);
+    this.config.onError?.(error as Error);
+    throw error;
   }
 
   getMicTrack(): MediaStreamTrack | null {
@@ -226,6 +232,7 @@ export class UnifiedAudioPipeline {
     
     logInfo(`[TTS] start ${Date.now()}`);
     this.config.onTTSStart?.(turnId);
+    this.currentTurnId = turnId; // Update current turn ID
 
     // Record TTS start time for grace window
     this.ttsStartTime = Date.now();
@@ -285,6 +292,7 @@ export class UnifiedAudioPipeline {
       } else {
         logError(`[UnifiedAudio] TTS failed:`, error);
         this.config.onTTSError?.(error as Error);
+        this.config.onError?.(error as Error);
       }
     } finally {
       // Always ensure proper cleanup on completion/abort/error
@@ -613,7 +621,7 @@ export class UnifiedAudioPipeline {
   }
 
   getCurrentTurnId(): string | null {
-    return null; // Not used in this implementation
+    return this.currentTurnId;
   }
 
   getMicStream(): MediaStream | null {
@@ -649,8 +657,34 @@ export class UnifiedAudioPipeline {
       speechActive: this.speech ? true : false,
       micTrackId: this._micTrack?.id || 'none',
       micAnalyzerReady: !!this.micAnalyzer,
-      aiAnalyzerReady: !!this.aiAnalyser
+      aiAnalyzerReady: !!this.aiAnalyser,
+      currentTurnId: this.currentTurnId
     };
+  }
+
+  // Set output device for TTS playback
+  async setOutputDevice(deviceId: string): Promise<void> {
+    if (!this.ttsEl) {
+      throw new Error('TTS element not initialized');
+    }
+    
+    if (!('setSinkId' in this.ttsEl)) {
+      throw new Error('setSinkId not supported in this browser');
+    }
+    
+    try {
+      await (this.ttsEl as any).setSinkId(deviceId);
+      logInfo(`[UnifiedAudio] Output device set to: ${deviceId}`);
+    } catch (error) {
+      logError('[UnifiedAudio] Failed to set output device:', error);
+      throw error;
+    }
+  }
+
+  // Force cleanup for testing scenarios
+  forceCleanup(): void {
+    logInfo('[UnifiedAudio] Force cleanup initiated');
+    this.cleanup();
   }
 
   private restartSpeechRecognition(): void {
@@ -673,6 +707,17 @@ export function getUnifiedAudioPipeline(config?: UnifiedAudioPipelineConfig): Un
 // Helper to get the current pipeline instance if it exists
 export function getCurrentPipeline(): UnifiedAudioPipeline | null {
   return unifiedPipeline;
+}
+
+// Check if current pipeline was created for testing
+export function isTestPipeline(): boolean {
+  return unifiedPipeline?.config?.isTestPipeline === true;
+}
+
+// Get pipeline instance with test flag
+export function getTestPipeline(config?: UnifiedAudioPipelineConfig): UnifiedAudioPipeline {
+  const testConfig = { ...config, isTestPipeline: true };
+  return getUnifiedAudioPipeline(testConfig);
 }
 
 export function cleanupUnifiedAudioPipeline(): void {
