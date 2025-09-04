@@ -22,16 +22,28 @@ export class UnifiedAudioPipeline {
   private micAnalyzer: AnalyserNode | null = null;
   private aiSource: MediaElementAudioSourceNode | null = null;
   private aiAnalyser: AnalyserNode | null = null;
-  private ttsAudioEl: HTMLAudioElement | null = null;
+  private ttsEl: HTMLAudioElement | null = null;
   private ttsAbortController: AbortController | null = null;
   private speech: EnhancedSpeechControls | null = null;
   private bargeInMonitoring: boolean = false;
   private bargeInInterval: NodeJS.Timeout | null = null;
   private bargeInTimer: NodeJS.Timeout | null = null;
   private healthInterval: NodeJS.Timeout | null = null;
-  private isInitialized: boolean = false;
+  private _isInitialized: boolean = false;
   private isCleaningUp: boolean = false;
   private config: UnifiedAudioPipelineConfig;
+  
+  // Barge-in state
+  private aiReady: boolean = false;
+  private ttsStartTime: number = 0;
+  private bargeInStableCount: number = 0;
+  private lastBargeInCheck: number = 0;
+  
+  // Constants
+  private readonly MIC_THRESHOLD = 0.1;
+  private readonly BARGE_IN_STABILITY_MS = 80;
+  private readonly GRACE_WINDOW_MS = 350;
+  private readonly BARGE_IN_CHECK_INTERVAL = 20; // ~50fps
 
   constructor(config: UnifiedAudioPipelineConfig) {
     this.config = config;
@@ -53,21 +65,25 @@ export class UnifiedAudioPipeline {
         logInfo('[UnifiedAudio] AudioContext created');
       }
 
-      // Create TTS audio element
-      if (!this.ttsAudioEl) {
-        this.ttsAudioEl = new Audio();
-        this.ttsAudioEl.preload = "auto";
-        this.ttsAudioEl.crossOrigin = "anonymous";
-        this.ttsAudioEl.addEventListener("ended", () => {
+      // Create TTS audio element - maintain ONE across the session
+      if (!this.ttsEl) {
+        this.ttsEl = new Audio();
+        this.ttsEl.preload = "auto";
+        this.ttsEl.crossOrigin = "anonymous";
+        this.ttsEl.addEventListener("canplay", () => {
+          this.aiReady = true;
+          logInfo('[UnifiedAudio] TTS element ready for playback');
+        });
+        this.ttsEl.addEventListener("ended", () => {
           try { 
             this.stopBargeInMonitoring(); 
             // Cleanup object URL when audio ends
-            if (this.ttsAudioEl?.src && this.ttsAudioEl.src.startsWith('blob:')) {
-              URL.revokeObjectURL(this.ttsAudioEl.src);
+            if (this.ttsEl?.src && this.ttsEl.src.startsWith('blob:')) {
+              URL.revokeObjectURL(this.ttsEl.src);
             }
           } catch {}
         });
-        this.ttsAudioEl.addEventListener("error", (e) => {
+        this.ttsEl.addEventListener("error", (e) => {
           console.error("[UnifiedAudio] TTS element error", e);
         });
         logInfo('[UnifiedAudio] TTS audio element created');
@@ -101,8 +117,7 @@ export class UnifiedAudioPipeline {
       // Initialize speech recognition
       this.speech = createEnhancedSpeech({
         onFinal: (text: string) => this.config.onFinalResult?.(text),
-        onBargeIn: this.config.onBargeIn,
-        onError: this.config.onError
+        onBargeIn: this.config.onBargeIn
       });
 
       if (!this.speech) {
@@ -112,7 +127,7 @@ export class UnifiedAudioPipeline {
       // Start health monitoring
       this.startHealthMonitoring();
 
-      this.isInitialized = true;
+      this._isInitialized = true;
       logInfo('[UnifiedAudio] Pipeline initialized successfully');
 
       // Notify mic track is ready
@@ -141,8 +156,11 @@ export class UnifiedAudioPipeline {
     // Set new abort controller
     this.ttsAbortController = new AbortController();
     
-    logInfo(`[UnifiedAudio] Starting TTS: "${text}"`);
+    logInfo(`[TTS] start ${Date.now()}`);
     this.config.onTTSStart?.(turnId);
+
+    // Record TTS start time for grace window
+    this.ttsStartTime = Date.now();
 
     // Start AI analyzer at TTS start
     this.startBargeInMonitoring();
@@ -172,10 +190,11 @@ export class UnifiedAudioPipeline {
       const objectUrl = URL.createObjectURL(blob);
 
       // Wire analyzers before playback (only for server TTS)
-      if (this.audioContext && this.ttsAudioEl) {
+      if (this.audioContext && this.ttsEl) {
         if (!this.aiSource) {
-          this.aiSource = this.audioContext.createMediaElementSource(this.ttsAudioEl);
+          this.aiSource = this.audioContext.createMediaElementSource(this.ttsEl);
           this.aiAnalyser = this.audioContext.createAnalyser();
+          this.aiAnalyser.fftSize = 2048; // As specified in requirements
           this.aiSource.connect(this.aiAnalyser);
           // Also route to output so audio is actually heard:
           this.aiSource.connect(this.audioContext.destination);
@@ -184,8 +203,8 @@ export class UnifiedAudioPipeline {
       }
 
       // Assign and play
-      this.ttsAudioEl!.src = objectUrl;
-      await this.ttsAudioEl!.play();
+      this.ttsEl!.src = objectUrl;
+      await this.ttsEl!.play();
       
       logInfo(`[UnifiedAudio] TTS playing: "${text}"`);
 
@@ -206,7 +225,7 @@ export class UnifiedAudioPipeline {
 
     // In client TTS mode, set aiAnalyzer to null since we don't have audio element
     if (process.env.NEXT_PUBLIC_TTS_MODE === 'client') {
-      this.aiAnalyzer = null;
+      this.aiAnalyser = null;
     }
 
     return new Promise((resolve, reject) => {
@@ -217,7 +236,7 @@ export class UnifiedAudioPipeline {
       };
       
       utterance.onend = () => {
-        logInfo('[UnifiedAudio] Client TTS ended');
+        logInfo('[TTS] end ${Date.now()}');
         this.stopBargeInMonitoring();
         resolve();
       };
@@ -242,14 +261,14 @@ export class UnifiedAudioPipeline {
     }
     
     try { 
-      this.ttsAudioEl?.pause(); 
+      this.ttsEl?.pause(); 
     } catch {}
     
-    if (this.ttsAudioEl) {
-      this.ttsAudioEl.currentTime = 0;
+    if (this.ttsEl) {
+      this.ttsEl.currentTime = 0;
       // Cleanup object URL if it exists
-      if (this.ttsAudioEl.src && this.ttsAudioEl.src.startsWith('blob:')) {
-        URL.revokeObjectURL(this.ttsAudioEl.src);
+      if (this.ttsEl.src && this.ttsEl.src.startsWith('blob:')) {
+        URL.revokeObjectURL(this.ttsEl.src);
       }
     }
 
@@ -278,7 +297,7 @@ export class UnifiedAudioPipeline {
 
       this.bargeInInterval = setInterval(() => {
         this.checkBargeInClientMode();
-      }, 16); // ~60fps
+      }, this.BARGE_IN_CHECK_INTERVAL);
     } else {
       // In server TTS mode, require BOTH mic analyser and aiAnalyser
       if (!this.micAnalyzer || !this.aiAnalyser) {
@@ -292,7 +311,7 @@ export class UnifiedAudioPipeline {
 
       this.bargeInInterval = setInterval(() => {
         this.checkBargeIn();
-      }, 16); // ~60fps
+      }, this.BARGE_IN_CHECK_INTERVAL);
     }
   }
 
@@ -308,34 +327,51 @@ export class UnifiedAudioPipeline {
     }
 
     this.bargeInMonitoring = false;
+    this.bargeInStableCount = 0;
     logDebug('[UnifiedAudio] Stopped barge-in monitoring');
   }
 
   private checkBargeIn(): void {
     if (!this.micAnalyzer || !this.aiAnalyser) return;
 
-    const micRMS = this.calculateRMS(this.micAnalyzer);
-    const aiRMS = this.calculateRMS(this.aiAnalyser);
+    const now = Date.now();
+    const micPower = this.rms(this.micAnalyzer);
+    const aiPower = this.rms(this.aiAnalyser) || 0;
+
+    // Check grace window - no barge-in allowed for first 350ms after TTS start
+    const timeSinceTTSStart = now - this.ttsStartTime;
+    if (timeSinceTTSStart < this.GRACE_WINDOW_MS) {
+      return;
+    }
 
     // Check if user is speaking while AI is talking
-    if (micRMS > 0.1 && aiRMS > 0.05) {
-      logInfo(`[UnifiedAudio] BARGE_SPEECH_DETECTED rms:${micRMS.toFixed(3)}`);
+    if (micPower > this.MIC_THRESHOLD && micPower > aiPower * 1.5) {
+      this.bargeInStableCount++;
       
-      // Stop TTS and trigger barge-in
-      this.stopTTS();
-      this.config.onBargeIn?.();
+      // Require stability for 80ms before triggering barge-in
+      if (this.bargeInStableCount * this.BARGE_IN_CHECK_INTERVAL >= this.BARGE_IN_STABILITY_MS) {
+        const dt = now - this.ttsStartTime;
+        logInfo(`[BARGE-IN] micPower:${micPower.toFixed(3)}, aiPower:${aiPower.toFixed(3)}, dt:${dt}ms`);
+        
+        // Stop TTS and trigger barge-in
+        this.stopTTS();
+        this.config.onBargeIn?.();
+      }
+    } else {
+      // Reset stability counter if conditions not met
+      this.bargeInStableCount = 0;
     }
   }
 
   private checkBargeInClientMode(): void {
     if (!this.micAnalyzer) return;
 
-    const micRMS = this.calculateRMS(this.micAnalyzer);
+    const micPower = this.rms(this.micAnalyzer);
 
     // In client TTS mode, only check mic level for barge-in
     // This is a simplified approach - you might want to add more sophisticated logic
-    if (micRMS > 0.15) { // Slightly higher threshold since we're not comparing to AI audio
-      logInfo(`[UnifiedAudio] BARGE_SPEECH_DETECTED (client mode) rms:${micRMS.toFixed(3)}`);
+    if (micPower > 0.15) { // Slightly higher threshold since we're not comparing to AI audio
+      logInfo(`[UnifiedAudio] BARGE_SPEECH_DETECTED (client mode) rms:${micPower.toFixed(3)}`);
       
       // Stop TTS and trigger barge-in
       this.stopTTS();
@@ -343,9 +379,10 @@ export class UnifiedAudioPipeline {
     }
   }
 
-  private calculateRMS(analyzer: AnalyserNode): number {
-    const dataArray = new Uint8Array(analyzer.frequencyBinCount);
-    analyzer.getByteFrequencyData(dataArray);
+  // RMS helper function as specified in requirements
+  private rms(analyser: AnalyserNode): number {
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(dataArray);
     
     let sum = 0;
     for (let i = 0; i < dataArray.length; i++) {
@@ -365,7 +402,7 @@ export class UnifiedAudioPipeline {
         audioContext: this.audioContext?.state || 'null',
         micStream: !!this.micStream,
         micTrack: !!this.micTrack,
-        ttsPlaying: !!this.ttsAudioEl?.src && !this.ttsAudioEl?.paused,
+        ttsPlaying: !!this.ttsEl?.src && !this.ttsEl?.paused,
         bargeInMonitoring: this.bargeInMonitoring
       };
       logDebug('[Health]', health);
@@ -408,9 +445,9 @@ export class UnifiedAudioPipeline {
     }
 
     // Clean up audio element
-    if (this.ttsAudioEl) {
-      this.ttsAudioEl.remove();
-      this.ttsAudioEl = null;
+    if (this.ttsEl) {
+      this.ttsEl.remove();
+      this.ttsEl = null;
     }
 
     // Don't close the AudioContext unless you're really tearing down the session
@@ -427,7 +464,7 @@ export class UnifiedAudioPipeline {
     this.micSource = null;
     this.micTrack = null;
 
-    this.isInitialized = false;
+    this._isInitialized = false;
     this.isCleaningUp = false;
 
     logInfo('[UnifiedAudio] Pipeline cleanup complete');
@@ -451,7 +488,7 @@ export class UnifiedAudioPipeline {
   // === PUBLIC API ===
 
   isTTSPlaying(): boolean {
-    return this.ttsAudioEl ? !this.ttsAudioEl.paused && !!this.ttsAudioEl.src : false;
+    return this.ttsEl ? !this.ttsEl.paused && !!this.ttsEl.src : false;
   }
 
   getCurrentTurnId(): string | null {
@@ -467,7 +504,7 @@ export class UnifiedAudioPipeline {
   }
 
   isInitialized(): boolean {
-    return this.isInitialized;
+    return this._isInitialized;
   }
 
   // Start speech recognition

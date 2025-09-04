@@ -13,7 +13,7 @@ import CallBar from "@/components/CallBar";
 import DebugToggle from "@/components/DebugToggle";
 import AudioDeviceSelector from "@/components/AudioDeviceSelector";
 import { logInfo, logError } from "@/lib/logger";
-import { registerMessageHandler, unregisterMessageHandler, connectMessageDispatcher, disconnectMessageDispatcher } from "@/lib/messageDispatcher";
+import { registerMessageHandler, unregisterMessageHandler, connectMessageDispatcher, disconnectMessageDispatcher, setMuted } from "@/lib/messageDispatcher";
 import { getUnifiedAudioPipeline, cleanupUnifiedAudioPipeline } from "@/lib/unifiedAudioPipeline";
 import { Room } from "livekit-client";
 import type { MessageRequest, MessageResponse } from "@/lib/messageDispatcher";
@@ -76,19 +76,25 @@ function SessionInner() {
         },
         onBargeIn: () => {
           logInfo('[Session] Barge-in triggered');
+          // Unmute dispatcher so next user speech can be sent
+          setMuted(false);
         },
         onTTSStart: (text) => {
           logInfo(`[Session] TTS started: "${text}"`);
+          // Mute dispatcher during TTS to prevent false triggers
+          setMuted(true);
         },
         onTTSEnd: (text) => {
-          logInfo(`[Session] TTS ended: "${text}"`);
+          logInfo(`[TTS] end ${Date.now()}`);
+          // Unmute dispatcher when TTS ends naturally
+          setMuted(false);
           // Don't auto-end the call - keep it connected
         },
         onTTSError: (error) => {
           logError('[Session] TTS error:', error);
         },
         onFinalResult: (text) => {
-          logInfo(`[Session] Speech recognition final result: "${text}"`);
+          logInfo(`[ASR] final ${text} ${Date.now()}`);
           // Handle speech recognition results here
         },
         onError: (error) => {

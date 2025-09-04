@@ -25,6 +25,18 @@ export interface MessageResponse {
 
 export type MessageHandler = (request: MessageRequest) => Promise<MessageResponse>;
 
+// Module-level mute flag as specified in requirements
+let muted = false;
+
+export function setMuted(v: boolean) { 
+  muted = v; 
+  logInfo(`[MessageDispatcher] Mute state changed to: ${v}`);
+}
+
+export function isMuted() { 
+  return muted; 
+}
+
 class MessageDispatcher {
   private handlers: MessageHandler[] = [];
   private connected = false;
@@ -90,6 +102,12 @@ class MessageDispatcher {
       return null;
     }
 
+    // Check if muted - drop message if muted as specified in requirements
+    if (muted) {
+      logInfo('[MessageDispatcher] Message dropped due to mute state');
+      return null;
+    }
+
     const messageId = crypto.randomUUID();
     logInfo('[MessageDispatcher] Processing message', { 
       id: messageId, 
@@ -98,20 +116,18 @@ class MessageDispatcher {
       confidence: request.metadata.confidence
     });
 
-    // If not connected, attempt a single connect() and then drop if still not connected
+    // If not connected, keep ONLY the most recent message as specified in requirements
     if (!this.connected) {
-      try {
-        logInfo('[MessageDispatcher] Not connected, attempting to connect...');
-        this.connect();
-      } catch (error) {
-        logError('[MessageDispatcher] Failed to connect:', error);
+      const MAX_QUEUE = 1;
+      if (this.messageQueue.length >= MAX_QUEUE) {
+        // Remove older messages, keep only the latest
+        this.messageQueue = [request];
+        logInfo('[MessageDispatcher] Connection offline, keeping only latest message', { queueLength: this.messageQueue.length });
+      } else {
+        this.messageQueue.push(request);
+        logInfo('[MessageDispatcher] Connection offline, queuing message', { queueLength: this.messageQueue.length });
       }
-      
-      // If still not connected after attempt, drop the message
-      if (!this.connected) {
-        logInfo('[MessageDispatcher] Dispatcher offline; dropped message: {id}', { id: messageId });
-        return null;
-      }
+      return null;
     }
 
     // If already awaiting AI response, queue this message
