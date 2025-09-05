@@ -5,7 +5,6 @@ import { useEffect, useMemo, useState } from "react";
 import ScenarioPicker from "@/components/ScenarioPicker";
 import { SCENARIOS } from "@/data/scenarios";
 import { addSession, getSessions, removeSession, clearSessions, type SavedSession } from "@/lib/sessions";
-import BudgetBadge from "@/components/BudgetBadge";
 
 export default function Home() {
   const router = useRouter();
@@ -28,7 +27,6 @@ export default function Home() {
             <h1 className="text-3xl font-semibold text-gray-900">Sales Sim</h1>
             <p className="mt-2 text-sm text-gray-600">Choose a mode to get started</p>
           </div>
-          <BudgetBadge />
         </div>
 
         <div className="mt-6 w-full max-w-3xl">

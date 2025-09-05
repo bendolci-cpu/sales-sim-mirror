@@ -1,3 +1,9 @@
+// MOCK MODE DISABLED - This file is kept for future reference
+// To re-enable mock mode:
+// 1. Import this file in session/page.tsx
+// 2. Add isMock state and toggle UI
+// 3. Add conditional logic to use getAgentReply() instead of /api/chat
+
 import type { Scenario } from "@/data/scenarios";
 
 export type HistoryTurn = { role: "user" | "agent"; text: string };

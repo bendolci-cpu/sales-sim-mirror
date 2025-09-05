@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
-import { logInfo, logError } from "@/lib/logger";
+import { info, error } from "@/lib/logger";
 
 export const runtime = "nodejs";
 
@@ -41,7 +41,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log("[Chat] Generating response for messages:", openaiMessages.length);
+    info('CHAT', 'Generating response for messages:', openaiMessages.length);
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -64,8 +64,8 @@ export async function POST(request: NextRequest) {
           })
         });
       }
-    } catch (error) {
-      logError("[Chat] Failed to track budget usage:", error);
+    } catch (err) {
+      error("CHAT", "Failed to track budget usage:", err);
       // Continue without budget tracking
     }
 
@@ -77,8 +77,8 @@ export async function POST(request: NextRequest) {
         const ttsData = await ttsResponse.json();
         ttsUrl = ttsData.audioUrl;
       }
-    } catch (error) {
-      logError("[Chat] TTS generation failed:", error);
+    } catch (err) {
+      error("CHAT", "TTS generation failed:", err);
       // Continue without TTS - the response will still be returned
     }
 
@@ -89,15 +89,15 @@ export async function POST(request: NextRequest) {
       success: true
     };
 
-    logInfo("[Chat] Generated response successfully", {
+    info("CHAT", "Generated response successfully", {
       responseLength: responseText.length,
       hasTTS: !!ttsUrl
     });
 
     return NextResponse.json(response);
 
-  } catch (error) {
-    logError("[Chat] Error generating response:", error);
+  } catch (err) {
+    error("CHAT", "Error generating response:", err);
     
     // Return a fallback response even if TTS fails
     const fallbackResponse = {

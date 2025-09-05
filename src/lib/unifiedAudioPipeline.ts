@@ -1,7 +1,7 @@
 // Unified Audio Pipeline - Single source of truth for all audio and speech recognition
 // Consolidates: AudioManager, LegacyAudioManager, BargeInDetector, ASRManager, TTSPlayer
 
-import { logInfo, logDebug, logWarn, logError } from './logger';
+import { info, warn, error, debug } from './logger';
 import { createEnhancedSpeech, type EnhancedSpeechControls } from './speech/enhancedSpeech';
 import { useState, useEffect } from 'react';
 
@@ -30,6 +30,7 @@ export class UnifiedAudioPipeline {
   private bargeInMonitoring: boolean = false;
   private bargeInInterval: NodeJS.Timeout | null = null;
   private bargeInTimer: NodeJS.Timeout | null = null;
+  private bargeInTriggered: boolean = false; // Track if barge-in has been triggered for current TTS
   private healthInterval: NodeJS.Timeout | null = null;
   private restartDebounceTimer: NodeJS.Timeout | null = null;
   private _isInitialized: boolean = false;
@@ -43,6 +44,7 @@ export class UnifiedAudioPipeline {
   private bargeInStableCount: number = 0;
   private lastBargeInCheck: number = 0;
   private lastRmsLogTime: number = 0;
+  private lastLoggedRms: number = 0;
   
   // Constants
   private readonly MIC_THRESHOLD = 0.1;
@@ -84,14 +86,14 @@ export class UnifiedAudioPipeline {
       
       // Log device info
       const settings = track.getSettings();
-      logInfo('[UnifiedAudio] Microphone track ready', { 
+      info('AUDIO', 'Microphone track ready', { 
         deviceId: settings.deviceId, 
         label: settings.label,
         sampleRate: settings.sampleRate 
       });
       
       // Log mic stream status
-      logInfo('[UnifiedAudio] Mic stream is live:', { 
+      info('AUDIO', 'Mic stream is live:', { 
         active: track.readyState === 'live',
         enabled: track.enabled,
         muted: track.muted
@@ -103,10 +105,10 @@ export class UnifiedAudioPipeline {
       }
 
       return track;
-    } catch (error) {
-      logError('[UnifiedAudio] Failed to get microphone track:', error);
-      this.config.onError?.(error as Error);
-      throw error;
+    } catch (err) {
+      error('AUDIO', 'Failed to get microphone track:', err);
+      this.config.onError?.(err as Error);
+      throw err;
     }
   }
 
@@ -119,7 +121,7 @@ export class UnifiedAudioPipeline {
       this.audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)({ 
         sampleRate: 24000 
       });
-      logInfo('[UnifiedAudio] AudioContext created during mic analyzer setup');
+      info('AUDIO', 'AudioContext created during mic analyzer setup');
     }
     
     if (this.micStream && this.audioContext) {
@@ -128,7 +130,7 @@ export class UnifiedAudioPipeline {
       this.micAnalyzer.fftSize = 256;
       this.micAnalyzer.smoothingTimeConstant = 0.8;
       this.micSource.connect(this.micAnalyzer);
-      logInfo('[UnifiedAudio] Microphone analyzer created and wired');
+      info('AUDIO', 'Microphone analyzer created and wired');
     }
   }
 
@@ -147,7 +149,7 @@ export class UnifiedAudioPipeline {
       this.audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)({ 
         sampleRate: 24000 
       });
-      logInfo('[UnifiedAudio] AudioContext created via getOrCreateAudioContext');
+      info('AUDIO', 'AudioContext created via getOrCreateAudioContext');
     }
     return this.audioContext;
   }
@@ -163,13 +165,13 @@ export class UnifiedAudioPipeline {
         this.audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)({ 
           sampleRate: 24000 
         });
-        logInfo('[UnifiedAudio] AudioContext created');
+        info('AUDIO', 'AudioContext created');
       }
 
       // Always resume AudioContext to handle suspended state
       if (this.audioContext.state === 'suspended') {
         await this.audioContext.resume();
-        logInfo('[UnifiedAudio] AudioContext resumed from suspended state');
+        info('AUDIO', 'AudioContext resumed from suspended state');
       }
 
       // Create TTS element if needed
@@ -177,7 +179,7 @@ export class UnifiedAudioPipeline {
         this.ttsEl = document.createElement('audio');
         this.ttsEl.preload = 'auto';
         this.ttsEl.volume = 1.0;
-        logInfo('[UnifiedAudio] TTS element created');
+        info('AUDIO', 'TTS element created');
       }
 
       // Re-check and wire mic analyzer if missing
@@ -199,26 +201,26 @@ export class UnifiedAudioPipeline {
           onQuietGateCancel: () => this.config.onQuietGateCancel?.(),
           onHealth: (health) => this.config.onHealth?.(health)
         });
-        logInfo('[UnifiedAudio] Speech recognition initialized');
+        info('AUDIO', 'Speech recognition initialized');
       }
 
       this._isInitialized = true;
-      logInfo('[UnifiedAudio] Pipeline initialized successfully');
+      info('AUDIO', 'Pipeline initialized successfully');
 
       // Notify mic track is ready if we have one
       if (this.config.onMicTrackReady && this._micTrack) {
         this.config.onMicTrackReady(this._micTrack);
       }
 
-    } catch (error) {
-      logError('[UnifiedAudio] Failed to initialize pipeline:', error);
-      throw error;
+    } catch (err) {
+      error('AUDIO', 'Failed to initialize pipeline:', err);
+      throw err;
     }
   }
 
   async playTTS(text: string, turnId: string): Promise<void> {
     if (this.isCleaningUp) {
-      logWarn('[UnifiedAudio] Cannot play TTS during cleanup');
+      warn('AUDIO', 'Cannot play TTS during cleanup');
       return;
     }
 
@@ -231,12 +233,15 @@ export class UnifiedAudioPipeline {
     // Set new abort controller
     this.ttsAbortController = new AbortController();
     
-    logInfo(`[TTS] start ${Date.now()}`);
+    info('TTS', `TTS start ${Date.now()}`);
     this.config.onTTSStart?.(turnId);
     this.currentTurnId = turnId; // Update current turn ID
 
     // Record TTS start time for grace window
     this.ttsStartTime = Date.now();
+    
+    // Reset barge-in state for new TTS playback
+    this.bargeInTriggered = false;
 
     // Gate ASR during TTS
     this.speech?.setTTSPlaying(true);
@@ -245,47 +250,25 @@ export class UnifiedAudioPipeline {
     this.startBargeInMonitoring();
 
     try {
-      // Always use server TTS - no more SpeechSynthesis fallback
-      const res = await fetch(`/api/tts?text=${encodeURIComponent(text)}`, { 
-        signal: this.ttsAbortController.signal 
-      });
+      // Try server TTS first
+      await this.playServerTTS(text, turnId);
       
-      if (!res.ok || res.status === 204) {
-        throw new Error(`Server TTS failed: ${res.status} ${res.statusText}`);
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        info('AUDIO', 'TTS aborted');
+        return;
       }
       
-      const data = await res.arrayBuffer();
-      const mime = res.headers.get("content-type") || "audio/mpeg";
-      const blob = new Blob([data], { type: mime });
-      const objectUrl = URL.createObjectURL(blob);
-
-      // Ensure AI analyzer is created and wired
-      if (this.audioContext && this.ttsEl) {
-        if (!this.aiSource) {
-          this.aiSource = this.audioContext.createMediaElementSource(this.ttsEl);
-          this.aiAnalyser = this.audioContext.createAnalyser();
-          this.aiAnalyser.fftSize = 2048; // As specified in requirements
-          this.aiSource.connect(this.aiAnalyser);
-          // Also route to output so audio is actually heard:
-          this.aiSource.connect(this.audioContext.destination);
-          logInfo('[UnifiedAudio] AI_ANALYZER_READY:true');
-        }
-      }
-
-      // Assign and play
-      this.ttsEl!.src = objectUrl;
-      await this.ttsEl!.play();
+      warn('AUDIO', 'Server TTS failed, trying fallback:', err);
       
-      logInfo(`[TTS] playback started`, { turnId });
-      logInfo(`[UnifiedAudio] TTS audio element started playback: "${text}"`);
-
-    } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        logInfo('[UnifiedAudio] TTS aborted');
-      } else {
-        logError(`[UnifiedAudio] TTS failed:`, error);
-        this.config.onTTSError?.(error as Error);
-        this.config.onError?.(error as Error);
+      // Fallback to client TTS
+      try {
+        await this.playClientTTS(text, turnId);
+      } catch (fallbackError) {
+        warn('AUDIO', 'Client TTS failed, using beep fallback:', fallbackError);
+        
+        // Last resort: play a beep to maintain flow
+        await this.playBeepFallback(turnId);
       }
     } finally {
       // Always ensure proper cleanup on completion/abort/error
@@ -294,11 +277,105 @@ export class UnifiedAudioPipeline {
       this.speech?.startQuietGate();
       this.config.onTTSEnd?.(turnId);
       
-      logInfo('[UnifiedAudio] TTS finished');
+      info('AUDIO', 'TTS finished');
       
       // Debounced restart of speech recognition after TTS finishes
       this.debouncedRestartSpeechRecognition();
     }
+  }
+
+  private async playServerTTS(text: string, turnId: string): Promise<void> {
+    const res = await fetch(`/api/tts?text=${encodeURIComponent(text)}`, { 
+      signal: this.ttsAbortController!.signal 
+    });
+    
+    if (!res.ok || res.status === 204) {
+      throw new Error(`Server TTS failed: ${res.status} ${res.statusText}`);
+    }
+    
+    const data = await res.arrayBuffer();
+    if (data.byteLength === 0) {
+      throw new Error('Server TTS returned empty audio data');
+    }
+    
+    const mime = res.headers.get("content-type") || "audio/mpeg";
+    const blob = new Blob([data], { type: mime });
+    const objectUrl = URL.createObjectURL(blob);
+
+    // Ensure AI analyzer is created and wired
+    if (this.audioContext && this.ttsEl) {
+      if (!this.aiSource) {
+        this.aiSource = this.audioContext.createMediaElementSource(this.ttsEl);
+        this.aiAnalyser = this.audioContext.createAnalyser();
+        this.aiAnalyser.fftSize = 2048; // As specified in requirements
+        this.aiSource.connect(this.aiAnalyser);
+        // Also route to output so audio is actually heard:
+        this.aiSource.connect(this.audioContext.destination);
+        info('AUDIO', 'AI_ANALYZER_READY:true');
+      }
+    }
+
+    // Assign and play
+    this.ttsEl!.src = objectUrl;
+    await this.ttsEl!.play();
+    
+    info('TTS', 'Server playback started', { turnId });
+  }
+
+  private async playClientTTS(text: string, turnId: string): Promise<void> {
+    if (!('speechSynthesis' in window)) {
+      throw new Error('SpeechSynthesis not available');
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 0.9;
+      utterance.pitch = 1.0;
+      utterance.volume = 0.8;
+
+      utterance.onend = () => {
+        info('TTS', 'Client playback finished', { turnId });
+        resolve();
+      };
+
+      utterance.onerror = (event) => {
+        error('TTS', 'Client playback error:', event.error);
+        reject(new Error(`Client TTS error: ${event.error}`));
+      };
+
+      speechSynthesis.speak(utterance);
+      info('TTS', 'Client playback started', { turnId });
+    });
+  }
+
+  private async playBeepFallback(turnId: string): Promise<void> {
+    if (!this.audioContext) {
+      throw new Error('AudioContext not available for beep fallback');
+    }
+
+    // Create a short beep using oscillator
+    const oscillator = this.audioContext.createOscillator();
+    const gainNode = this.audioContext.createGain();
+    
+    oscillator.connect(gainNode);
+    gainNode.connect(this.audioContext.destination);
+    
+    oscillator.frequency.setValueAtTime(800, this.audioContext.currentTime);
+    oscillator.type = 'sine';
+    
+    gainNode.gain.setValueAtTime(0, this.audioContext.currentTime);
+    gainNode.gain.linearRampToValueAtTime(0.1, this.audioContext.currentTime + 0.01);
+    gainNode.gain.linearRampToValueAtTime(0, this.audioContext.currentTime + 0.2);
+    
+    oscillator.start(this.audioContext.currentTime);
+    oscillator.stop(this.audioContext.currentTime + 0.2);
+    
+    info('TTS', 'Beep fallback played', { turnId });
+    
+    // Wait for the beep to finish
+    return new Promise<void>((resolve) => {
+      setTimeout(resolve, 250);
+    });
   }
 
 
@@ -334,7 +411,7 @@ export class UnifiedAudioPipeline {
     // Restart speech recognition after TTS stops
     this.restartSpeechRecognition();
     
-    logInfo('[UnifiedAudio] TTS stopped');
+    info('AUDIO', 'TTS stopped');
   }
 
   private startBargeInMonitoring(): void {
@@ -342,49 +419,45 @@ export class UnifiedAudioPipeline {
 
     // Check if mic is ready before starting barge-in monitoring
     if (!this.isMicReady()) {
-      logInfo('[UnifiedAudio] Mic not ready, skipping barge-in monitoring');
+      info('AUDIO', 'Mic not ready, skipping barge-in monitoring');
       return;
     }
 
-    // Check if we're in client TTS mode
-    const isClientTTSMode = process.env.NEXT_PUBLIC_TTS_MODE === 'client';
-
-    if (isClientTTSMode) {
-      // In client TTS mode, skip barge-in entirely - no AI analyzer, mic-only barge-in immediately cancels TTS
-      logInfo('[UnifiedAudio] Skipping barge-in monitoring in client TTS mode');
-      return;
-    } else {
-      // In server TTS mode, require BOTH mic analyser and aiAnalyser
-      if (!this.aiAnalyser) {
-        // Try to wire the AI analyzer if it's missing
-        if (this.audioContext && this.ttsEl && !this.aiSource) {
-          try {
-            this.aiSource = this.audioContext.createMediaElementSource(this.ttsEl);
-            this.aiAnalyser = this.audioContext.createAnalyser();
-            this.aiAnalyser.fftSize = 2048; // As specified in requirements
-            this.aiSource.connect(this.aiAnalyser);
-            // Also route to output so audio is actually heard:
-            this.aiSource.connect(this.audioContext.destination);
-            logInfo('[UnifiedAudio] AI_ANALYZER_READY:true (wired during barge-in start)');
-          } catch (error) {
-            logError('[UnifiedAudio] Failed to wire AI analyzer during barge-in start:', error);
-          }
-        }
-        
-        if (!this.aiAnalyser) {
-          logInfo('[UnifiedAudio] AI analyzer not ready, skipping barge-in monitoring');
-          return;
+    // Check if we have an AI analyzer for barge-in detection
+    if (!this.aiAnalyser) {
+      // Try to wire the AI analyzer if it's missing
+      if (this.audioContext && this.ttsEl && !this.aiSource) {
+        try {
+          this.aiSource = this.audioContext.createMediaElementSource(this.ttsEl);
+          this.aiAnalyser = this.audioContext.createAnalyser();
+          this.aiAnalyser.fftSize = 2048; // As specified in requirements
+          this.aiSource.connect(this.aiAnalyser);
+          // Also route to output so audio is actually heard:
+          this.aiSource.connect(this.audioContext.destination);
+          info('AUDIO', 'AI_ANALYZER_READY:true (wired during barge-in start)');
+        } catch (err) {
+          error('AUDIO', 'Failed to wire AI analyzer during barge-in start:', err);
         }
       }
-
-      this.bargeInMonitoring = true;
-      logInfo('[UnifiedAudio] BARGE_MONITORING_START mic:true ai:true');
-      logDebug('[UnifiedAudio] Starting barge-in monitoring (server TTS mode)');
-
-      this.bargeInInterval = setInterval(() => {
-        this.checkBargeIn();
-      }, this.BARGE_IN_CHECK_INTERVAL);
+      
+      if (!this.aiAnalyser) {
+        // Check if we're in client TTS mode without analyser
+        if (process.env.NEXT_PUBLIC_TTS_MODE === 'client') {
+          info('AUDIO', 'Skipping barge-in monitoring in client TTS mode');
+          return;
+        }
+        info('AUDIO', 'AI analyzer not ready, skipping barge-in monitoring');
+        return;
+      }
     }
+
+    this.bargeInMonitoring = true;
+    info('AUDIO', 'BARGE_MONITORING_START mic:true ai:true');
+    debug('AUDIO', 'Starting barge-in monitoring');
+
+    this.bargeInInterval = setInterval(() => {
+      this.checkBargeIn();
+    }, this.BARGE_IN_CHECK_INTERVAL);
   }
 
   private stopBargeInMonitoring(): void {
@@ -400,7 +473,8 @@ export class UnifiedAudioPipeline {
 
     this.bargeInMonitoring = false;
     this.bargeInStableCount = 0;
-    logDebug('[UnifiedAudio] Stopped barge-in monitoring');
+    this.bargeInTriggered = false; // Reset triggered flag
+    debug('AUDIO', 'Stopped barge-in monitoring');
   }
 
   private checkBargeIn(): void {
@@ -422,12 +496,33 @@ export class UnifiedAudioPipeline {
       
       // Require stability for 80ms before triggering barge-in
       if (this.bargeInStableCount * this.BARGE_IN_CHECK_INTERVAL >= this.BARGE_IN_STABILITY_MS) {
-        const dt = now - this.ttsStartTime;
-        logInfo(`[BARGE-IN] micPower:${micPower.toFixed(3)}, aiPower:${aiPower.toFixed(3)}, dt:${dt}ms`);
+        // Ensure barge-in is only triggered once per TTS playback (idempotent)
+        if (this.bargeInTriggered) {
+          return;
+        }
         
-        // On trigger: pause ttsEl and stop the monitor loop — do not tear down the whole audio pipeline or stop recognition
+        this.bargeInTriggered = true;
+        const dt = now - this.ttsStartTime;
+        info('BARGE-IN', `micPower:${micPower.toFixed(3)}, aiPower:${aiPower.toFixed(3)}, dt:${dt}ms`);
+        
+        // Stop/pause TTS promise chain once (idempotent)
         this.ttsEl?.pause();
+        if (this.ttsAbortController) {
+          this.ttsAbortController.abort();
+        }
+        
+        // Stop barge-in monitoring immediately
         this.stopBargeInMonitoring();
+        
+        // Call pauseRecognitionLoop() -> (brief 100ms) -> startRecognitionLoop() to guarantee recognizer state is correct
+        this.speech?.pauseRecognitionLoop();
+        
+        // Brief delay before restarting recognition to ensure clean state
+        setTimeout(() => {
+          this.speech?.startRecognitionLoop();
+          info('BARGE-IN', 'ASR restarted after barge-in');
+        }, 100);
+        
         this.config.onBargeIn?.();
       }
     } else {
@@ -436,21 +531,6 @@ export class UnifiedAudioPipeline {
     }
   }
 
-  private checkBargeInClientMode(): void {
-    if (!this.micAnalyzer) return;
-
-    const micPower = this.rms(this.micAnalyzer);
-
-    // In client TTS mode, only check mic level for barge-in
-    // This is a simplified approach - you might want to add more sophisticated logic
-    if (micPower > 0.15) { // Slightly higher threshold since we're not comparing to AI audio
-      logInfo(`[UnifiedAudio] BARGE_SPEECH_DETECTED (client mode) rms:${micPower.toFixed(3)}`);
-      
-      // Stop TTS and trigger barge-in
-      this.stopTTS();
-      this.config.onBargeIn?.();
-    }
-  }
 
   // RMS helper function as specified in requirements
   private rms(analyser: AnalyserNode): number {
@@ -470,11 +550,15 @@ export class UnifiedAudioPipeline {
     if (!this.micAnalyzer) return 0;
     const rms = this.rms(this.micAnalyzer);
     
-    // Throttle RMS > 0 logs to ~5/sec to reduce noise
+    // Only log RMS when it changes significantly (0.05 threshold) or crosses 0
     const now = Date.now();
-    if (rms > 0 && (!this.lastRmsLogTime || now - this.lastRmsLogTime > 200)) {
-      logInfo('[UnifiedAudio] Analyzer RMS > 0:', { rms: rms.toFixed(3) });
+    const rmsChanged = Math.abs(rms - this.lastLoggedRms) > 0.05;
+    const crossedZero = (this.lastLoggedRms === 0 && rms > 0) || (this.lastLoggedRms > 0 && rms === 0);
+    
+    if ((rmsChanged || crossedZero) && (!this.lastRmsLogTime || now - this.lastRmsLogTime > 500)) {
+      debug('AUDIO', `Mic RMS: ${rms.toFixed(3)} (change: ${(rms - this.lastLoggedRms).toFixed(3)})`);
       this.lastRmsLogTime = now;
+      this.lastLoggedRms = rms;
     }
     
     return rms;
@@ -493,7 +577,7 @@ export class UnifiedAudioPipeline {
         ttsPlaying: !!this.ttsEl?.src && !this.ttsEl?.paused,
         bargeInMonitoring: this.bargeInMonitoring
       };
-      logDebug('[Health]', health);
+      debug('HEALTH', 'Health check', health);
     }, 5000);
   }
 
@@ -501,13 +585,13 @@ export class UnifiedAudioPipeline {
 
   cleanup(): void {
     if (this.isCleaningUp) {
-      logDebug('[UnifiedAudio] Cleanup already in progress');
+      debug('AUDIO', 'Cleanup already in progress');
       return;
     }
 
     this.isCleaningUp = true;
-    logInfo('[UnifiedAudio] DISCONNECT_REASON:cleanup_requested');
-    logInfo('[UnifiedAudio] Cleaning up pipeline');
+    info('AUDIO', 'DISCONNECT_REASON:cleanup_requested');
+    info('AUDIO', 'Cleaning up pipeline');
 
     // Stop health monitoring
     if (this.healthInterval) {
@@ -528,7 +612,7 @@ export class UnifiedAudioPipeline {
 
     // Stop speech recognition
     if (this.speech) {
-      this.speech.stop();
+      this.speech.pauseRecognitionLoop();
       this.speech = null;
     }
 
@@ -561,12 +645,12 @@ export class UnifiedAudioPipeline {
     this._isInitialized = false;
     this.isCleaningUp = false;
 
-    logInfo('[UnifiedAudio] Pipeline cleanup complete');
+    info('AUDIO', 'Pipeline cleanup complete');
   }
 
   // Force cleanup when session is truly ending (not HMR)
   forceCleanup(): void {
-    logInfo('[UnifiedAudio] Force cleanup - closing AudioContext');
+    info('AUDIO', 'Force cleanup - closing AudioContext');
     
     // First do normal cleanup
     this.cleanup();
@@ -575,7 +659,7 @@ export class UnifiedAudioPipeline {
     if (this.audioContext && this.audioContext.state !== 'closed') {
       this.audioContext.close();
       this.audioContext = null;
-      logInfo('[UnifiedAudio] AudioContext closed');
+      info('AUDIO', 'AudioContext closed');
     }
   }
 
@@ -600,14 +684,14 @@ export class UnifiedAudioPipeline {
   // Start speech recognition
   startSpeech(): void {
     if (this.speech) {
-      this.speech.start();
+      this.speech.startRecognitionLoop();
     }
   }
 
   // Stop speech recognition
   stopSpeech(): void {
     if (this.speech) {
-      this.speech.stop();
+      this.speech.pauseRecognitionLoop();
     }
   }
 
@@ -639,23 +723,23 @@ export class UnifiedAudioPipeline {
     
     try {
       await (this.ttsEl as any).setSinkId(deviceId);
-      logInfo(`[UnifiedAudio] Output device set to: ${deviceId}`);
-    } catch (error) {
-      logError('[UnifiedAudio] Failed to set output device:', error);
-      throw error;
+      info('AUDIO', `Output device set to: ${deviceId}`);
+    } catch (err) {
+      error('AUDIO', 'Failed to set output device:', err);
+      throw err;
     }
   }
 
   // Force cleanup for testing scenarios
   forceCleanup(): void {
-    logInfo('[UnifiedAudio] Force cleanup initiated');
+    info('AUDIO', 'Force cleanup initiated');
     this.cleanup();
   }
 
   // Self-test method to play a short beep for audio routing verification
   async playSelfTest(): Promise<void> {
     try {
-      logInfo('[UnifiedAudio] Starting self-test beep...');
+      info('AUDIO', 'Starting self-test beep...');
       
       // Ensure AudioContext is ready
       if (!this.audioContext) {
@@ -679,33 +763,25 @@ export class UnifiedAudioPipeline {
       oscillator.start();
       oscillator.stop(this.audioContext.currentTime + 0.5); // 500ms beep
       
-      logInfo('[UnifiedAudio] Self-test beep started');
+      info('AUDIO', 'Self-test beep started');
       
       // Clean up after beep
       setTimeout(() => {
         oscillator.disconnect();
         gainNode.disconnect();
-        logInfo('[UnifiedAudio] Self-test beep completed');
+        info('AUDIO', 'Self-test beep completed');
       }, 600);
       
-    } catch (error) {
-      logError('[UnifiedAudio] Self-test beep failed:', error);
-      throw error;
+    } catch (err) {
+      error('AUDIO', 'Self-test beep failed:', err);
+      throw err;
     }
   }
 
   private restartSpeechRecognition(): void {
-    if (this.speech && !this.speech.isRunning()) {
-      // Guard against InvalidStateError - only start if not already running
-      try {
-        this.speech.start();
-      } catch (error: any) {
-        if (error.name === 'InvalidStateError') {
-          logDebug('[UnifiedAudio] Ignoring InvalidStateError - recognition already running');
-        } else {
-          logError('[UnifiedAudio] Failed to restart speech recognition:', error);
-        }
-      }
+    if (this.speech) {
+      // Use the new guarded start method
+      this.speech.startRecognitionLoop();
     }
   }
 
@@ -724,7 +800,22 @@ export class UnifiedAudioPipeline {
 // Singleton instance
 let unifiedPipeline: UnifiedAudioPipeline | null = null;
 
+// Fast Refresh/HMR protection
+let isHMRCleanupInProgress = false;
+
 export function getUnifiedAudioPipeline(config?: UnifiedAudioPipelineConfig): UnifiedAudioPipeline {
+  // Fast Refresh/HMR protection - clean up previous instance if in development
+  if (process.env.NODE_ENV === 'development' && unifiedPipeline && !isHMRCleanupInProgress) {
+    isHMRCleanupInProgress = true;
+    try {
+      info('AUDIO', 'HMR detected - cleaning up previous pipeline instance');
+      unifiedPipeline.forceCleanup();
+    } finally {
+      isHMRCleanupInProgress = false;
+    }
+    unifiedPipeline = null;
+  }
+  
   if (!unifiedPipeline) {
     unifiedPipeline = new UnifiedAudioPipeline(config || {});
   }
@@ -749,10 +840,10 @@ export function getTestPipeline(config?: UnifiedAudioPipelineConfig): UnifiedAud
 }
 
 export function cleanupUnifiedAudioPipeline(): void {
-  if (unifiedPipeline && !unifiedPipeline.config?.isTestPipeline) {
+  if (unifiedPipeline && !unifiedPipeline.config?.isTestPipeline && !isHMRCleanupInProgress) {
     unifiedPipeline.cleanup();
     unifiedPipeline = null;
-    logInfo('[UnifiedAudio] Singleton pipeline cleaned up');
+    info('AUDIO', 'Singleton pipeline cleaned up');
   }
 }
 

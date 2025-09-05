@@ -5,7 +5,6 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import ClientOnly from "@/components/ClientOnly";
 const ChatWindowClient = dynamic(() => import("@/components/ChatWindow"), { ssr: false });
-import BudgetBadge from "@/components/BudgetBadge";
 import ScenarioPicker from "@/components/ScenarioPicker";
 import { SCENARIOS } from "@/data/scenarios";
 
@@ -70,11 +69,15 @@ function SessionInner() {
   const unifiedPipeline = useRef<ReturnType<typeof getUnifiedAudioPipeline> | null>(null);
   const livekitRoom = useRef<Room | null>(null);
   const callEndedRef = useRef(false);
+  const pipelineInitializedRef = useRef(false);
+  const livekitConnectingRef = useRef(false);
+  const cleanupInProgressRef = useRef(false);
   const scenario = SCENARIOS.find(s => s.id === scenarioId);
   
   // Initialize pipeline on client side only
   useEffect(() => {
-    if (typeof window !== 'undefined') {
+    if (typeof window !== 'undefined' && !pipelineInitializedRef.current) {
+      pipelineInitializedRef.current = true;
       unifiedPipeline.current = getUnifiedAudioPipeline({
         onMicTrackReady: (track) => {
           setMicTrack(track);
@@ -211,13 +214,19 @@ function SessionInner() {
     callEndedRef.current = false;
     
     try {
-      // Initialize unified pipeline
+      // Initialize unified pipeline (guard against duplicate initialization)
       if (!unifiedPipeline.current) {
         throw new Error("Pipeline not initialized");
       }
-      logInfo("[Session] Initializing unified pipeline...");
-      await unifiedPipeline.current.initialize();
-      logInfo("[Session] Unified pipeline initialized successfully");
+      
+      // Only initialize if not already initialized
+      if (!unifiedPipeline.current.isInitialized()) {
+        logInfo("[Session] Initializing unified pipeline...");
+        await unifiedPipeline.current.initialize();
+        logInfo("[Session] Unified pipeline initialized successfully");
+      } else {
+        logInfo("[Session] Pipeline already initialized, skipping");
+      }
       
       // Fix mic race - don't join LiveKit until a real mic track exists
       const micTrack = await unifiedPipeline.current.ensureMicTrack();
@@ -301,6 +310,19 @@ function SessionInner() {
       throw new Error('No mic track available for LiveKit');
     }
     
+    // Prevent duplicate connections
+    if (livekitConnectingRef.current) {
+      logInfo("[Session] LiveKit connection already in progress, skipping");
+      return;
+    }
+    
+    if (livekitRoom.current?.state === 'connected') {
+      logInfo("[Session] LiveKit already connected, skipping");
+      return;
+    }
+    
+    livekitConnectingRef.current = true;
+    
     try {
       // Create LiveKit room
       livekitRoom.current = new Room();
@@ -340,46 +362,60 @@ function SessionInner() {
       
     } catch (error) {
       logError("[Session] Failed to connect to LiveKit:", error);
+    } finally {
+      livekitConnectingRef.current = false;
     }
   };
   
   const handleEnd = () => {
     if (!voiceConnected) return;
     
+    // Prevent duplicate cleanup
+    if (cleanupInProgressRef.current) {
+      logInfo("[Session] Cleanup already in progress, skipping");
+      return;
+    }
+    
+    cleanupInProgressRef.current = true;
+    
     logInfo("[Session] DISCONNECT_REASON:user_explicit_end");
     callEndedRef.current = true;
     
-    // Disconnect from LiveKit
-    if (livekitRoom.current) {
-      livekitRoom.current.disconnect();
-      livekitRoom.current = null;
+    try {
+      // Disconnect from LiveKit
+      if (livekitRoom.current) {
+        livekitRoom.current.disconnect();
+        livekitRoom.current = null;
+      }
+      
+      // Stop speech recognition (only if call hasn't ended)
+      if (unifiedPipeline.current && !callEndedRef.current) {
+        unifiedPipeline.current.stopSpeech();
+      }
+      
+      // Force cleanup unified pipeline (close AudioContext)
+      if (unifiedPipeline.current) {
+        unifiedPipeline.current.forceCleanup();
+        unifiedPipeline.current = null;
+      }
+      
+      // Clear the module singleton as well
+      cleanupUnifiedAudioPipeline();
+      
+      // Disconnect message dispatcher
+      disconnectMessageDispatcher();
+      
+      setVoiceConnected(false);
+      setMicStream(null);
+      setMicTrack(null);
+      setPublishedTrackId(null);
+      setTurns([]);
+      setExternalTurn(null);
+      
+      logInfo("[Session] Call ended and pipeline cleaned up");
+    } finally {
+      cleanupInProgressRef.current = false;
     }
-    
-    // Stop speech recognition (only if call hasn't ended)
-    if (unifiedPipeline.current && !callEndedRef.current) {
-      unifiedPipeline.current.stopSpeech();
-    }
-    
-    // Force cleanup unified pipeline (close AudioContext)
-    if (unifiedPipeline.current) {
-      unifiedPipeline.current.forceCleanup();
-      unifiedPipeline.current = null;
-    }
-    
-    // Clear the module singleton as well
-    cleanupUnifiedAudioPipeline();
-    
-    // Disconnect message dispatcher
-    disconnectMessageDispatcher();
-    
-    setVoiceConnected(false);
-    setMicStream(null);
-    setMicTrack(null);
-    setPublishedTrackId(null);
-    setTurns([]);
-    setExternalTurn(null);
-    
-    logInfo("[Session] Call ended and pipeline cleaned up");
   };
 
   // === CHAT HANDLERS ===
@@ -416,8 +452,13 @@ function SessionInner() {
   useEffect(() => {
     // Cleanup on unmount
     return () => {
-      if (unifiedPipeline.current) {
-        unifiedPipeline.current.cleanup();
+      if (unifiedPipeline.current && !cleanupInProgressRef.current) {
+        cleanupInProgressRef.current = true;
+        try {
+          unifiedPipeline.current.cleanup();
+        } finally {
+          cleanupInProgressRef.current = false;
+        }
       }
     };
   }, []);
@@ -447,7 +488,6 @@ function SessionInner() {
                 </p>
             </div>
             <div className="flex items-center gap-4">
-              <BudgetBadge />
               <DebugToggle />
               <button
                 onClick={async () => {

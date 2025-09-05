@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { error } from '@/lib/logger';
 import { getCurrentPipeline } from '@/lib/unifiedAudioPipeline';
 
 interface AudioDevice {
@@ -17,13 +18,14 @@ export default function AudioDeviceSelector() {
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<string>('');
   const [outputDeviceError, setOutputDeviceError] = useState<string>('');
+  const [browserSupportWarning, setBrowserSupportWarning] = useState<string>('');
+  const [permissionError, setPermissionError] = useState<string>('');
 
-  useEffect(() => {
-    loadDevices();
-  }, []);
-
-  const loadDevices = async () => {
+  // Memoize loadDevices to prevent unnecessary re-renders
+  const loadDevices = useCallback(async () => {
     try {
+      setPermissionError('');
+      
       // Use navigator.mediaDevices directly
       const devices = await navigator.mediaDevices.enumerateDevices();
       
@@ -46,6 +48,14 @@ export default function AudioDeviceSelector() {
       setInputDevices(inputs);
       setOutputDevices(outputs);
       
+      // Check if device labels are empty (indicates permission not granted)
+      const hasEmptyLabels = inputs.some(device => !device.label || device.label.includes('Microphone')) ||
+                            outputs.some(device => !device.label || device.label.includes('Speaker'));
+      
+      if (hasEmptyLabels) {
+        setPermissionError('⚠️ Device labels are empty. Please grant microphone permission and refresh devices.');
+      }
+      
       // Auto-select first device if available
       if (inputs.length > 0 && !selectedInput) {
         setSelectedInput(inputs[0].deviceId);
@@ -53,37 +63,58 @@ export default function AudioDeviceSelector() {
       if (outputs.length > 0 && !selectedOutput) {
         setSelectedOutput(outputs[0].deviceId);
       }
-    } catch (error) {
-      console.error('Failed to load audio devices:', error);
+    } catch (err) {
+      error('AUDIO-DEVICE', 'Failed to load audio devices:', err);
+      setPermissionError('❌ Failed to load audio devices. Please check permissions and try again.');
     }
-  };
+  }, [selectedInput, selectedOutput]);
+
+  useEffect(() => {
+    loadDevices();
+  }, [loadDevices]);
 
   const handleOutputDeviceChange = async (deviceId: string) => {
     setSelectedOutput(deviceId);
     setOutputDeviceError('');
+    setBrowserSupportWarning('');
     
     try {
       const pipeline = getCurrentPipeline();
-      if (pipeline) {
+      if (pipeline && pipeline.setOutputDevice) {
+        // Use pipeline's setOutputDevice method if available
         await pipeline.setOutputDevice(deviceId);
         setTestResult(`✅ Output device changed to: ${outputDevices.find(d => d.deviceId === deviceId)?.label || deviceId}`);
       } else {
-        // Test with a local audio element if no pipeline exists
+        // Test with a throwaway audio element if no pipeline exists
         const testAudio = new Audio();
         if (!('setSinkId' in testAudio)) {
+          // Show one-time browser support warning
+          if (!browserSupportWarning) {
+            setBrowserSupportWarning('⚠️ Output device selection not supported in this browser. Use your system audio settings instead.');
+          }
           throw new Error('setSinkId not supported in this browser');
         }
+        
+        // Test setSinkId on throwaway element
         await (testAudio as any).setSinkId(deviceId);
+        
+        // Destroy the test element immediately after confirming support
+        testAudio.src = '';
+        testAudio.load();
+        
         setTestResult(`✅ Output device changed to: ${outputDevices.find(d => d.deviceId === deviceId)?.label || deviceId}`);
       }
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
       if (errorMessage.includes('setSinkId not supported')) {
-        setOutputDeviceError('⚠️ Output device selection not supported in this browser. Use your system audio settings instead.');
+        // Only show warning once
+        if (!browserSupportWarning) {
+          setBrowserSupportWarning('⚠️ Output device selection not supported in this browser. Use your system audio settings instead.');
+        }
       } else {
         setOutputDeviceError(`❌ Failed to change output device: ${errorMessage}`);
       }
-      console.error('Failed to change output device:', error);
+      error('AUDIO-DEVICE', 'Failed to change output device:', err);
     }
   };
 
@@ -93,19 +124,34 @@ export default function AudioDeviceSelector() {
     setIsTesting(true);
     setTestResult('');
     
+    let stream: MediaStream | null = null;
+    let audioContext: AudioContext | null = null;
+    let source: MediaStreamAudioSourceNode | null = null;
+    let analyzer: AnalyserNode | null = null;
+    let createdOwnContext = false;
+    
     try {
       // Get user media with selected device
-      const stream = await navigator.mediaDevices.getUserMedia({
+      stream = await navigator.mediaDevices.getUserMedia({
         audio: { deviceId: { exact: selectedInput } }
       });
       
-      // Use shared AudioContext from UnifiedAudioPipeline
+      // Create local AudioContext ONLY if pipeline is absent
       const pipeline = getCurrentPipeline();
-      const audioContext = pipeline ? pipeline.getOrCreateAudioContext() : new AudioContext();
-      const source = audioContext.createMediaStreamSource(stream);
-      const analyzer = audioContext.createAnalyser();
+      if (pipeline) {
+        // Use pipeline's AudioContext but don't connect to its graph
+        audioContext = pipeline.getOrCreateAudioContext();
+      } else {
+        // Create our own AudioContext for testing
+        audioContext = new AudioContext();
+        createdOwnContext = true;
+      }
+      
+      source = audioContext.createMediaStreamSource(stream);
+      analyzer = audioContext.createAnalyser();
       analyzer.fftSize = 256;
       
+      // Connect source to analyzer for testing (NOT to pipeline's destination)
       source.connect(analyzer);
       
       // Test levels for a short duration
@@ -116,6 +162,8 @@ export default function AudioDeviceSelector() {
       const startTime = Date.now();
       
       const checkLevels = () => {
+        if (!analyzer) return;
+        
         analyzer.getByteFrequencyData(dataArray);
         const currentLevel = Math.max(...dataArray);
         maxLevel = Math.max(maxLevel, currentLevel);
@@ -123,10 +171,18 @@ export default function AudioDeviceSelector() {
         if (Date.now() - startTime < testDuration) {
           requestAnimationFrame(checkLevels);
         } else {
-          // Stop the stream and cleanup
-          stream.getTracks().forEach(track => track.stop());
-          // Only close AudioContext if we created our own (not from pipeline)
-          if (!pipeline) {
+          // Cleanup: Stop all MediaStream tracks
+          if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+          }
+          
+          // Disconnect analyzer from source
+          if (source && analyzer) {
+            source.disconnect(analyzer);
+          }
+          
+          // Only close AudioContext if we created our own
+          if (createdOwnContext && audioContext) {
             audioContext.close();
           }
           
@@ -145,16 +201,36 @@ export default function AudioDeviceSelector() {
       setTestResult('🎤 Testing microphone levels... Please speak for 2 seconds');
       
     } catch (error) {
+      // Ensure cleanup on error
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+      if (source && analyzer) {
+        source.disconnect(analyzer);
+      }
+      if (createdOwnContext && audioContext) {
+        audioContext.close();
+      }
+      
       setTestResult(`❌ Test failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
       setIsTesting(false);
     }
   };
 
   const testAudioOutput = async () => {
+    let audioContext: AudioContext | null = null;
+    let createdOwnContext = false;
+    
     try {
       // Use shared AudioContext from UnifiedAudioPipeline
       const pipeline = getCurrentPipeline();
-      const audioContext = pipeline ? pipeline.getOrCreateAudioContext() : new AudioContext();
+      if (pipeline) {
+        audioContext = pipeline.getOrCreateAudioContext();
+      } else {
+        audioContext = new AudioContext();
+        createdOwnContext = true;
+      }
+      
       const oscillator = audioContext.createOscillator();
       const gainNode = audioContext.createGain();
       
@@ -171,11 +247,15 @@ export default function AudioDeviceSelector() {
       setTimeout(() => {
         setTestResult('');
         // Only close AudioContext if we created our own (not from pipeline)
-        if (!pipeline) {
+        if (createdOwnContext && audioContext) {
           audioContext.close();
         }
       }, 2000);
     } catch (error) {
+      // Ensure cleanup on error
+      if (createdOwnContext && audioContext) {
+        audioContext.close();
+      }
       setTestResult(`❌ Audio output test failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
@@ -183,6 +263,20 @@ export default function AudioDeviceSelector() {
   return (
     <div className="p-4 bg-white rounded-lg border border-gray-200 shadow-sm">
       <h3 className="text-lg font-semibold mb-4">Audio Device Settings</h3>
+      
+      {/* Permission Error */}
+      {permissionError && (
+        <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-md">
+          <p className="text-sm text-yellow-800">{permissionError}</p>
+        </div>
+      )}
+      
+      {/* Browser Support Warning */}
+      {browserSupportWarning && (
+        <div className="mb-4 p-3 bg-orange-50 border border-orange-200 rounded-md">
+          <p className="text-sm text-orange-800">{browserSupportWarning}</p>
+        </div>
+      )}
       
       <div className="space-y-4">
         {/* Input Devices */}

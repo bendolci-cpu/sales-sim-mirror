@@ -1,118 +1,87 @@
-// Professional logging utility with log levels, change detection, and throttling
+// Smart logger with timestamp, domain tags, and de-duplication
+// Reduces console noise by preventing repeated identical messages within 1 second
 
-export enum LogLevel {
-  ERROR = 0,
-  WARN = 1,
-  INFO = 2,
-  DEBUG = 3,
+interface LogEntry {
+  timestamp: number;
+  count: number;
 }
 
-class Logger {
-  private level: LogLevel;
-  private changeCache = new Map<string, any>();
-  private throttleCache = new Map<string, number>();
+// De-duplication map: message -> { timestamp, count }
+const dedupeMap = new Map<string, LogEntry>();
 
-  constructor() {
-    // Get log level from environment variable
-    const envLevel = process.env.NEXT_PUBLIC_LOG_LEVEL?.toLowerCase();
-    this.level = this.parseLogLevel(envLevel);
-  }
-
-  private parseLogLevel(level?: string): LogLevel {
-    switch (level) {
-      case 'error':
-        return LogLevel.ERROR;
-      case 'warn':
-        return LogLevel.WARN;
-      case 'info':
-        return LogLevel.INFO;
-      case 'debug':
-        return LogLevel.DEBUG;
-      default:
-        // Default: quiet in production, info in development
-        return process.env.NODE_ENV === 'production' ? LogLevel.INFO : LogLevel.INFO;
+// Clean up old entries every 5 seconds
+setInterval(() => {
+  const now = Date.now();
+  for (const [message, entry] of dedupeMap.entries()) {
+    if (now - entry.timestamp > 1000) {
+      dedupeMap.delete(message);
     }
   }
+}, 5000);
 
-  private shouldLog(level: LogLevel): boolean {
-    return level <= this.level;
+function shouldLog(message: string): boolean {
+  const now = Date.now();
+  const existing = dedupeMap.get(message);
+  
+  if (!existing) {
+    dedupeMap.set(message, { timestamp: now, count: 1 });
+    return true;
   }
-
-  private formatMessage(level: string, message: string, ...args: any[]): string {
-    const timestamp = new Date().toISOString().split('T')[1].split('.')[0]; // HH:MM:SS
-    return `[${timestamp}] [${level.toUpperCase()}] ${message}`;
+  
+  // If within 1 second, increment count and don't log
+  if (now - existing.timestamp < 1000) {
+    existing.count++;
+    return false;
   }
-
-  error(message: string, ...args: any[]): void {
-    if (this.shouldLog(LogLevel.ERROR)) {
-      console.error(this.formatMessage('error', message), ...args);
-    }
+  
+  // If count > 1, log the suppressed count
+  if (existing.count > 1) {
+    console.log(`[LOGGER] Suppressed ${existing.count - 1} duplicate messages`);
   }
+  
+  // Reset for new period
+  dedupeMap.set(message, { timestamp: now, count: 1 });
+  return true;
+}
 
-  warn(message: string, ...args: any[]): void {
-    if (this.shouldLog(LogLevel.WARN)) {
-      console.warn(this.formatMessage('warn', message), ...args);
-    }
-  }
+function formatMessage(level: string, domain: string, message: string, ...args: any[]): string {
+  const timestamp = new Date().toISOString().substr(11, 12); // HH:MM:SS.mmm
+  return `[${timestamp}] [${level}] [${domain}] ${message}`;
+}
 
-  info(message: string, ...args: any[]): void {
-    if (this.shouldLog(LogLevel.INFO)) {
-      console.log(this.formatMessage('info', message), ...args);
-    }
-  }
-
-  debug(message: string, ...args: any[]): void {
-    if (this.shouldLog(LogLevel.DEBUG)) {
-      console.log(this.formatMessage('debug', message), ...args);
-    }
-  }
-
-  // Helper: Only log when value changes
-  logChange(key: string, value: any, message: string, ...args: any[]): void {
-    const previousValue = this.changeCache.get(key);
-    if (previousValue !== value) {
-      this.changeCache.set(key, value);
-      this.info(`${message} (${previousValue} → ${value})`, ...args);
-    }
-  }
-
-  // Helper: Throttle logs to once per second
-  logThrottled(key: string, message: string, throttleMs: number = 1000, ...args: any[]): void {
-    const now = Date.now();
-    const lastLog = this.throttleCache.get(key) || 0;
-    
-    if (now - lastLog >= throttleMs) {
-      this.throttleCache.set(key, now);
-      this.debug(message, ...args);
-    }
-  }
-
-  // Helper: Log summary instead of full objects
-  logSummary(prefix: string, items: any[], maxItems: number = 3): void {
-    if (items.length === 0) {
-      this.info(`${prefix}: empty`);
-    } else if (items.length <= maxItems) {
-      this.info(`${prefix}: ${items.length} items`, items);
-    } else {
-      this.info(`${prefix}: ${items.length} items (showing first ${maxItems})`, items.slice(0, maxItems));
-    }
-  }
-
-  // Helper: Clear caches (useful for cleanup)
-  clearCaches(): void {
-    this.changeCache.clear();
-    this.throttleCache.clear();
+export function info(domain: string, message: string, ...args: any[]): void {
+  const formattedMessage = formatMessage('INFO', domain, message);
+  if (shouldLog(formattedMessage)) {
+    console.log(formattedMessage, ...args);
   }
 }
 
-// Export singleton instance
-export const logger = new Logger();
+export function warn(domain: string, message: string, ...args: any[]): void {
+  const formattedMessage = formatMessage('WARN', domain, message);
+  if (shouldLog(formattedMessage)) {
+    console.warn(formattedMessage, ...args);
+  }
+}
 
-// Export convenience functions
-export const logError = (message: string, ...args: any[]) => logger.error(message, ...args);
-export const logWarn = (message: string, ...args: any[]) => logger.warn(message, ...args);
-export const logInfo = (message: string, ...args: any[]) => logger.info(message, ...args);
-export const logDebug = (message: string, ...args: any[]) => logger.debug(message, ...args);
-export const logChange = (key: string, value: any, message: string, ...args: any[]) => logger.logChange(key, value, message, ...args);
-export const logThrottled = (key: string, message: string, throttleMs?: number, ...args: any[]) => logger.logThrottled(key, message, throttleMs, ...args);
-export const logSummary = (prefix: string, items: any[], maxItems?: number) => logger.logSummary(prefix, items, maxItems);
+export function error(domain: string, message: string, ...args: any[]): void {
+  const formattedMessage = formatMessage('ERROR', domain, message);
+  if (shouldLog(formattedMessage)) {
+    console.error(formattedMessage, ...args);
+  }
+}
+
+export function debug(domain: string, message: string, ...args: any[]): void {
+  // Only log debug in development
+  if (process.env.NODE_ENV === 'development') {
+    const formattedMessage = formatMessage('DEBUG', domain, message);
+    if (shouldLog(formattedMessage)) {
+      console.log(formattedMessage, ...args);
+    }
+  }
+}
+
+// Legacy compatibility - these will be replaced gradually
+export const logInfo = (message: string, ...args: any[]) => info('LEGACY', message, ...args);
+export const logWarn = (message: string, ...args: any[]) => warn('LEGACY', message, ...args);
+export const logError = (message: string, ...args: any[]) => error('LEGACY', message, ...args);
+export const logDebug = (message: string, ...args: any[]) => debug('LEGACY', message, ...args);

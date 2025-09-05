@@ -23,7 +23,7 @@ This session page uses a unified audio pipeline for reliable voice interaction w
 - **Unified Pipeline**: Single source of truth for all audio operations
 - **Barge-in**: Interrupt TTS when user speaks loudly
 - **HMR Safe**: Proper cleanup on hot reload
-- **Mock/Live Toggle**: Switch between mock and live modes
+- **Live Mode Only**: Always uses real TTS/ASR pipeline (mock mode removed)
 - **Graceful Cleanup**: No leaked analyzers or event listeners
 
 ## Architecture

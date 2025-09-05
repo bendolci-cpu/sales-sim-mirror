@@ -8,7 +8,7 @@ export type MicRecorderProps = {
   onTextFinal?: (text: string) => void;
   disabled?: boolean;
   className?: string;
-  // New mock-call props
+  // Call state props
   active?: boolean;
   onUserUtterance?: (text: string, atMs: number) => void;
 };
