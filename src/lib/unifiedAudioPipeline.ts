@@ -250,8 +250,14 @@ export class UnifiedAudioPipeline {
     this.startBargeInMonitoring();
 
     try {
-      // Try server TTS first
-      await this.playServerTTS(text, turnId);
+      // Check TTS mode - if client mode, skip server TTS entirely
+      if (process.env.NEXT_PUBLIC_TTS_MODE === 'client') {
+        info('AUDIO', 'TTS mode is client - using client TTS directly');
+        await this.playClientTTS(text, turnId);
+      } else {
+        // Try server TTS first
+        await this.playServerTTS(text, turnId);
+      }
       
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
@@ -259,15 +265,22 @@ export class UnifiedAudioPipeline {
         return;
       }
       
-      warn('AUDIO', 'Server TTS failed, trying fallback:', err);
-      
-      // Fallback to client TTS
-      try {
-        await this.playClientTTS(text, turnId);
-      } catch (fallbackError) {
-        warn('AUDIO', 'Client TTS failed, using beep fallback:', fallbackError);
+      // Only try fallback if we weren't already in client mode
+      if (process.env.NEXT_PUBLIC_TTS_MODE !== 'client') {
+        warn('AUDIO', 'Server TTS failed, trying fallback:', err);
         
-        // Last resort: play a beep to maintain flow
+        // Fallback to client TTS
+        try {
+          await this.playClientTTS(text, turnId);
+        } catch (fallbackError) {
+          warn('AUDIO', 'Client TTS failed, using beep fallback:', fallbackError);
+          
+          // Last resort: play a beep to maintain flow
+          await this.playBeepFallback(turnId);
+        }
+      } else {
+        // If we were already in client mode and it failed, use beep fallback
+        warn('AUDIO', 'Client TTS failed, using beep fallback:', err);
         await this.playBeepFallback(turnId);
       }
     } finally {
