@@ -109,6 +109,116 @@ export function resetSpeechMergeState() {
   pendingFinalText = "";
   lastFinalAt = 0;
 }
+
+// Short-final hold configuration/state
+const SHORT_FINAL_WORDS = 3;
+const SHORT_FINAL_HOLD_MS = 900;
+// Question-aware tuning
+const Q_START = /^(what|what's|who|who's|where|where's|why|why's|how|how's|when|when's)\b/i;
+const Q_FRAG  = /(what|who|where|why|how|when)\b.*$/i;
+// Base windows
+const Q_HOLD_MS = 900;
+const BASE_HOLD_MS = 500;
+const MAX_JOIN_MS = 900;
+let holdTimer: ReturnType<typeof setTimeout> | null = null;
+let heldFinal = "";
+let heldConfidence = 0;
+let holdRescheduledOnce = false;
+
+export function clearHeld() {
+  if (holdTimer) clearTimeout(holdTimer);
+  holdTimer = null;
+  heldFinal = "";
+  heldConfidence = 0;
+  holdRescheduledOnce = false;
+}
+
+function looksIncomplete(text: string): boolean {
+  const t = (text || "").trim();
+  if (!t) return true;
+  const words = t.split(/\s+/).length;
+  const endsClean = /[.!?]$/.test(t);
+  return words < SHORT_FINAL_WORDS || !endsClean;
+}
+
+export function holdMsFor(text: string): number {
+  if (!text) return BASE_HOLD_MS;
+  const trimmed = text.trim();
+  if (Q_START.test(trimmed) || Q_FRAG.test(trimmed)) return Q_HOLD_MS;
+  return BASE_HOLD_MS;
+}
+
+export function startHoldTimer(delayMs: number) {
+  try { if (holdTimer) clearTimeout(holdTimer); } catch {}
+  if (!heldFinal) return;
+  holdRescheduledOnce = false;
+  holdTimer = window.setTimeout(() => {
+    // Guard: if TTS is still active, reschedule once instead of emitting
+    if (isTtsActive()) {
+      if (!holdRescheduledOnce) {
+        holdRescheduledOnce = true;
+        const delay = Math.min(holdMsFor(heldFinal), MAX_JOIN_MS);
+        startHoldTimer(delay);
+      }
+      return;
+    }
+    info('SPEECH', '[SPEECH] Emitting held final after hold timer');
+    emitHeld('timer');
+  }, delayMs);
+  debug('SPEECH', `Hold timer scheduled: ${delayMs}ms for "${heldFinal}"`);
+}
+
+export function flushHeld() {
+  const toSend = (heldFinal || '').trim();
+  const conf = heldConfidence || 0.9;
+  clearHeld();
+  if (!toSend) return;
+  const nowTs = Date.now();
+  const boostedConfidence = calculateBoostedConfidence(toSend, conf);
+  info('SPEECH', `Final: "${toSend}" (conf=${boostedConfidence.toFixed(2)})`);
+  sendMessage({
+    text: toSend,
+    metadata: { source: 'speech', confidence: boostedConfidence, duration: 0, timestamp: nowTs }
+  });
+  handlers.onFinal?.(toSend);
+}
+
+function isTtsActive(): boolean {
+  try { return getDispatcherPhase() === 'tts'; } catch { return false; }
+}
+
+export function setHeld(text: string, confidence: number) {
+  const t = (text || '').trim();
+  if (!t) return;
+  heldFinal = heldFinal ? `${heldFinal} ${t}`.trim() : t;
+  heldConfidence = confidence || heldConfidence || 0.9;
+  lastFinalAt = Date.now();
+}
+
+export function setBaseFinal(text: string, confidence: number) {
+  const t = (text || '').trim();
+  if (!t) return;
+  heldFinal = t;
+  heldConfidence = confidence || 0.9;
+  lastFinalAt = Date.now();
+  info('SPEECH', `[SPEECH] Base final set: "${heldFinal}"`);
+}
+
+export function emitHeld(reason: 'timer'|'tts_start'|'tts_end'|'cleanup'|'forced' = 'timer') {
+  if (!heldFinal) return;
+  const toSend = heldFinal;
+  const conf = heldConfidence || 0.9;
+  clearHeld();
+  const nowTs = Date.now();
+  const boostedConfidence = calculateBoostedConfidence(toSend, conf);
+  info('SPEECH', `[SPEECH] Final: "${toSend}" (conf=${conf.toFixed(2)}, via=${reason})`);
+  sendMessage({
+    text: toSend,
+    metadata: { source: 'speech', confidence: boostedConfidence, duration: 0, timestamp: nowTs }
+  });
+  handlers.onFinal?.(toSend);
+}
+
 // Deduplication for final-drop logs
 let lastFinalDropPhase: 'tts' | 'inflight' | null = null;
 // Initialize singleton recognizer
@@ -316,6 +426,19 @@ function finalizeCurrentUtterance() {
   const speechDuration = Date.now() - vadState.speechStartTime;
   
   debug('SPEECH', `Finalizing utterance: "${transcript}" (duration: ${speechDuration}ms)`);
+
+  // Buffer finals while inflight/tts (no timer scheduling here to avoid dupes)
+  try {
+    const phase = getDispatcherPhase?.() as any || 'idle';
+    if (phase === 'tts' || phase === 'inflight') {
+      setHeld(transcript, 0.9);
+      info('SPEECH', `[SPEECH] Final buffered (phase=${phase}) without scheduling timer: "${transcript}"`);
+      // Clear interim flag and reset VAD state, but do not dispatch yet
+      hasInterim = false;
+      resetVADState();
+      return;
+    }
+  } catch {}
   
   // Process the final result
   processFinalResult(transcript, 0.9); // Use high confidence for our VAD-controlled results
@@ -360,11 +483,17 @@ function resetVADState() {
 function processFinalResult(transcript: string, confidence: number) {
   // Early gate: prevent finals from re-entering during TTS or in-flight AI
   const phase = getDispatcherPhase();
-  if (phase === 'tts' || phase === 'inflight') {
-    if (lastFinalDropPhase !== phase) {
-      info('SPEECH', `[SPEECH] Final dropped (phase=${phase}).`);
-    }
-    lastFinalDropPhase = phase;
+  if (phase === 'tts') {
+    // buffer during active TTS
+    setHeld(transcript, confidence);
+    return;
+  } else if (phase === 'inflight') {
+    // Buffer incomplete/short finals while model is speaking/streaming
+    setHeld(transcript, confidence);
+    const ms = Math.min(holdMsFor(transcript), MAX_JOIN_MS);
+    if (holdTimer) clearTimeout(holdTimer);
+    holdTimer = window.setTimeout(() => emitHeld('timer'), ms);
+    info('SPEECH', `[SPEECH] Final buffered (phase=inflight): "${transcript}"`);
     return;
   } else {
     lastFinalDropPhase = null;
@@ -424,37 +553,37 @@ function processFinalResult(transcript: string, confidence: number) {
     }
   }
   
-  // Join-window merge: if a new final arrives shortly after the previous, merge into one
-  // Step-2 safe join window merge
-  let finalText = transcript;
+  // Short-final hold/merge logic with consistent hold path
   try {
-    if (pendingFinalText && pendingFinalText.length > 0 && (now - lastFinalAt) <= JOIN_WINDOW_MS) {
-      finalText = `${pendingFinalText} ${transcript}`.trim();
-      info('SPEECH', '[SPEECH] Join window hit; merged continuation into previous utterance.');
+    if (heldFinal && (now - lastFinalAt) <= SHORT_FINAL_HOLD_MS) {
+      const oldNorm = heldFinal.trim().toLowerCase().replace(/\s+/g, ' ');
+      const newNorm = (transcript || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      if (newNorm.startsWith(oldNorm)) {
+        heldFinal = transcript.trim();
+        info('SPEECH', '[SPEECH] Prefix merge: replaced held fragment with fuller final');
+      } else {
+        heldFinal = (heldFinal + ' ' + transcript).trim();
+      }
+      heldConfidence = confidence || heldConfidence;
+      lastFinalAt = now;
+      if (holdTimer) clearTimeout(holdTimer);
+      const delay = Math.min(holdMsFor(heldFinal), MAX_JOIN_MS);
+      startHoldTimer(delay);
+      return;
     }
-  } catch {}
 
-  // Commit the utterance
-  info('SPEECH', `Final: "${finalText}" (conf=${boostedConfidence.toFixed(2)}, dur=${duration}ms)`);
-  
-  // Send to message dispatcher
-  sendMessage({
-    text: finalText,
-    metadata: {
-      source: 'speech',
-      confidence: boostedConfidence,
-      duration,
-      timestamp: now
+    setBaseFinal(transcript, confidence);
+    const delay = Math.min(holdMsFor(heldFinal), MAX_JOIN_MS);
+    startHoldTimer(delay);
+    return;
+  } catch (e) {
+    console.error('processFinalResult error', e);
+    try {
+      finalizeCurrentUtterance(heldFinal || transcript);
+    } finally {
+      clearHeld();
     }
-  });
-  
-  handlers.onFinal?.(finalText);
-
-  // Update join-window tracking
-  try {
-    pendingFinalText = finalText;
-    lastFinalAt = now;
-  } catch {}
+  }
 }
 
 // Calculate boosted confidence based on domain keywords

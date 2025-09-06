@@ -4,6 +4,7 @@
 import { info, warn, error, debug } from './logger';
 import { createEnhancedSpeech, type EnhancedSpeechControls, getASRInterimFlag } from './speech/enhancedSpeech';
 import { setMuted, setDispatcherTtsPlaying, cancelDispatcherPending } from './messageDispatcher';
+import { emitHeld } from './speech/enhancedSpeech';
 import { useState, useEffect } from 'react';
 
 export interface UnifiedAudioPipelineConfig {
@@ -324,6 +325,7 @@ export class UnifiedAudioPipeline {
       this.stopBargeInMonitoring();
       this.speech?.setTTSPlaying(false);
       setDispatcherTtsPlaying(false);
+      try { queueMicrotask(() => emitHeld('tts_end')); } catch {}
       setMuted(false);
       this.speech?.startQuietGate();
       this.config.onTTSEnd?.(turnId);
@@ -608,6 +610,7 @@ export class UnifiedAudioPipeline {
     // Ensure ASR is properly un-gated and mute state is cleared
     this.speech?.setTTSPlaying(false);
     setDispatcherTtsPlaying(false);
+    try { queueMicrotask(() => emitHeld('tts_end')); } catch {}
     setMuted(false);
     this.speech?.startQuietGate();
     
@@ -678,6 +681,7 @@ export class UnifiedAudioPipeline {
     // Clear TTS playing state and mute
     this.speech?.setTTSPlaying(false);
     setDispatcherTtsPlaying(false);
+    try { queueMicrotask(() => emitHeld('tts_end')); } catch {}
     setMuted(false);
     
     // Clear abort controller

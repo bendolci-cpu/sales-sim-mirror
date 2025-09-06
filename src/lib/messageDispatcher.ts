@@ -1,5 +1,6 @@
 // Unified message dispatcher for both text and voice input
 import { logInfo, logError, logWarn } from './logger';
+import { setHeld as speechSetHeld, startHoldTimer as speechStartHoldTimer, holdMsFor as speechHoldMsFor } from './speech/enhancedSpeech';
 
 export interface MessageMetadata {
   source: 'voice' | 'text' | 'speech';
@@ -147,11 +148,19 @@ class MessageDispatcher {
       return null;
     }
 
-    // Drop speech during TTS (no queue) - log once per utterance
+    // Buffer speech during TTS (no queue) - hold for merge and timed emit
     if (this.ttsPlaying && request.metadata.source === 'speech') {
       const hash = (request.text || '').trim();
       if (hash && hash !== this.lastDroppedHash) {
-        logInfo('[Dispatcher] Dropping msg during TTS (no-queue) len=' + request.text.length);
+        try {
+          const conf = request.metadata.confidence ?? 0.9;
+          const delay = Math.min(speechHoldMsFor?.(request.text) ?? 600, 900);
+          speechSetHeld(request.text, conf);
+          speechStartHoldTimer(delay);
+          logInfo('[Dispatcher] Held msg during TTS len=' + request.text.length);
+        } catch {
+          logInfo('[Dispatcher] Held msg during TTS (fallback) len=' + request.text.length);
+        }
         this.lastDroppedHash = hash;
       }
       return null;
