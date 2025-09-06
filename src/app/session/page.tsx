@@ -13,8 +13,12 @@ import DebugToggle from "@/components/DebugToggle";
 import { logInfo, logError } from "@/lib/logger";
 import { registerMessageHandler, unregisterMessageHandler, connectMessageDispatcher, disconnectMessageDispatcher, setMuted, isMuted } from "@/lib/messageDispatcher";
 import { getUnifiedAudioPipeline, cleanupUnifiedAudioPipeline, useAudioDebugOverlay } from "@/lib/unifiedAudioPipeline";
+import { resetSpeechMergeState } from "@/lib/speech/enhancedSpeech";
 import { Room } from "livekit-client";
 import type { MessageRequest, MessageResponse } from "@/lib/messageDispatcher";
+
+// Feature flags
+const AUTO_GREETING_ENABLED = false;
 
 // Helper function to connect LiveKit with existing mic track
 async function connectToLiveKitWithMicTrack(room: Room, micTrack: MediaStreamTrack): Promise<import('livekit-client').LocalTrackPublication | undefined> {
@@ -226,7 +230,7 @@ function SessionInner() {
         throw new Error("Pipeline not initialized");
       }
       
-      // Only initialize if not already initialized
+      // Steps 3-5: init AudioContext, TTS element, and recognizer
       if (!unifiedPipeline.current.isInitialized()) {
         logInfo("[Session] Initializing unified pipeline...");
         await unifiedPipeline.current.initialize();
@@ -235,7 +239,11 @@ function SessionInner() {
         logInfo("[Session] Pipeline already initialized, skipping");
       }
       
-      // Fix mic race - don't join LiveKit until a real mic track exists
+      // Step 6: start recognition and reset merge state
+      resetSpeechMergeState();
+      unifiedPipeline.current.startSpeech();
+
+      // Step 7: wire mic analyzer by ensuring mic track
       const micTrack = await unifiedPipeline.current.ensureMicTrack();
       if (!micTrack) {
         logError('[Session] No mic track after ensureMicTrack');
@@ -247,25 +255,24 @@ function SessionInner() {
       const stream = unifiedPipeline.current.getMicStream();
       setMicStream(stream);
       
-      // Connect to LiveKit
-      await connectToLiveKit(micTrack);
+      // Step 8: publish mic track (connect to LiveKit and publish)
+      const publication = await connectToLiveKit(micTrack);
       
-      // Connect message dispatcher after successful LiveKit connection
+      // Step 9: only now connect and register the dispatcher handler
       connectMessageDispatcher();
-      logInfo("[Session] Message dispatcher connected");
+      registerMessageHandler(handleMessageDispatcher);
+
+      // Ready log
+      logInfo(`[READY] Voice loop armed with mic track id ${micTrack.id} and publication sid ${publication?.trackSid || 'none'}`);
       
-      // Start speech recognition (only if call hasn't ended)
-      if (unifiedPipeline.current && !callEndedRef.current) {
-        unifiedPipeline.current.startSpeech();
-        logInfo("[Session] Speech recognition started");
-      }
+      // Recognition already started above
       
       setVoiceConnected(true);
       logInfo("[Session] Call started successfully");
       
-      // Play greeting if available
+      // Play greeting if enabled and available
       const greeting = scenario?.starterMessages?.[0];
-      if (greeting) {
+      if (AUTO_GREETING_ENABLED && greeting) {
         logInfo(`[Session] Playing greeting: "${greeting}"`);
         const greetingTurn: Turn = {
           id: crypto.randomUUID(),
@@ -299,7 +306,7 @@ function SessionInner() {
           logError(`[Session] Greeting TTS failed:`, error);
         }
       } else {
-        logInfo("[Session] No greeting available");
+        logInfo("[Session] Greeting disabled or not available");
       }
       
     } catch (error) {
@@ -309,7 +316,7 @@ function SessionInner() {
     }
   };
   
-  const connectToLiveKit = async (micTrack: MediaStreamTrack) => {
+  const connectToLiveKit = async (micTrack: MediaStreamTrack): Promise<import('livekit-client').LocalTrackPublication | undefined> => {
     // Add guard at the very top of LiveKit connect that throws a clear error if micTrack is missing
     if (!micTrack) {
       throw new Error('No mic track available for LiveKit');
@@ -364,9 +371,11 @@ function SessionInner() {
       }
       
       logInfo("[Session] Connected to LiveKit room");
+      return publication;
       
     } catch (error) {
       logError("[Session] Failed to connect to LiveKit:", error);
+      return undefined;
     } finally {
       livekitConnectingRef.current = false;
     }

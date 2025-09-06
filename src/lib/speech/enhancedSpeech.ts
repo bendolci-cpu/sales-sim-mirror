@@ -1,7 +1,7 @@
 // Singleton SpeechRecognition with guarded lifecycle and auto-restart
 // Ensures exactly one recognizer instance with proper start/stop management
 import { info, debug, error, warn } from "@/lib/logger";
-import { sendMessage } from "@/lib/messageDispatcher";
+import { sendMessage, getDispatcherPhase } from "@/lib/messageDispatcher";
 
 export interface EnhancedSpeechControls {
   startRecognitionLoop: () => void;
@@ -44,9 +44,9 @@ const HEALTH_LOG_INTERVAL = 5000; // Health check interval
 const RESTART_DELAY = 150; // Delay before auto-restart
 
 // VAD Configuration - Custom utterance finalization timing
-const MIN_SPEECH_MS = 450; // Minimum continuous speech before we consider finalizing
-const REQUIRED_SILENCE_MS = 300; // Continuous silence required to finalize (350-500ms range)
-const OVERALL_SILENCE_TIMEOUT_MS = 1200; // Fallback finalize if user stops speaking (1200-1500ms range)
+const MIN_SPEECH_MS = 480; // Minimum continuous speech before we consider finalizing (450-500ms)
+const REQUIRED_SILENCE_MS = 350; // Continuous silence required to finalize (300-400ms)
+const OVERALL_SILENCE_TIMEOUT_MS = 2100; // Fallback finalize if user stops speaking (2000-2200ms)
 
 // Meta/filler phrases to drop
 const META_PHRASES = [
@@ -101,6 +101,16 @@ const recentUtterances = new Map<string, number>(); // hash -> timestamp
 
 // Health monitoring
 let lastHealthLog = 0;
+let cfgLogged = false;
+const JOIN_WINDOW_MS = 700;
+let pendingFinalText = "";
+let lastFinalAt = 0;
+export function resetSpeechMergeState() {
+  pendingFinalText = "";
+  lastFinalAt = 0;
+}
+// Deduplication for final-drop logs
+let lastFinalDropPhase: 'tts' | 'inflight' | null = null;
 // Initialize singleton recognizer
 function initRecognizer(): SpeechRecognition | null {
   if (recognition) return recognition;
@@ -348,6 +358,17 @@ function resetVADState() {
 
 // Process final speech result
 function processFinalResult(transcript: string, confidence: number) {
+  // Early gate: prevent finals from re-entering during TTS or in-flight AI
+  const phase = getDispatcherPhase();
+  if (phase === 'tts' || phase === 'inflight') {
+    if (lastFinalDropPhase !== phase) {
+      info('SPEECH', `[SPEECH] Final dropped (phase=${phase}).`);
+    }
+    lastFinalDropPhase = phase;
+    return;
+  } else {
+    lastFinalDropPhase = null;
+  }
   const now = Date.now();
   const duration = Date.now() - vadState.speechStartTime;
   
@@ -403,12 +424,22 @@ function processFinalResult(transcript: string, confidence: number) {
     }
   }
   
+  // Join-window merge: if a new final arrives shortly after the previous, merge into one
+  // Step-2 safe join window merge
+  let finalText = transcript;
+  try {
+    if (pendingFinalText && pendingFinalText.length > 0 && (now - lastFinalAt) <= JOIN_WINDOW_MS) {
+      finalText = `${pendingFinalText} ${transcript}`.trim();
+      info('SPEECH', '[SPEECH] Join window hit; merged continuation into previous utterance.');
+    }
+  } catch {}
+
   // Commit the utterance
-  info('SPEECH', `Final: "${transcript}" (conf=${boostedConfidence.toFixed(2)}, dur=${duration}ms)`);
+  info('SPEECH', `Final: "${finalText}" (conf=${boostedConfidence.toFixed(2)}, dur=${duration}ms)`);
   
   // Send to message dispatcher
   sendMessage({
-    text: transcript,
+    text: finalText,
     metadata: {
       source: 'speech',
       confidence: boostedConfidence,
@@ -417,7 +448,13 @@ function processFinalResult(transcript: string, confidence: number) {
     }
   });
   
-  handlers.onFinal?.(transcript);
+  handlers.onFinal?.(finalText);
+
+  // Update join-window tracking
+  try {
+    pendingFinalText = finalText;
+    lastFinalAt = now;
+  } catch {}
 }
 
 // Calculate boosted confidence based on domain keywords
@@ -490,6 +527,12 @@ function startHealthMonitoring() {
       lastHealthLog = now;
     }
   }, 1000);
+
+  // One-time startup config log
+  if (!cfgLogged) {
+    info('SPEECH', `[SPEECH] cfg overallSilenceMs=${OVERALL_SILENCE_TIMEOUT_MS}, requiredSilenceMs=${REQUIRED_SILENCE_MS}, minSpeechMs=${MIN_SPEECH_MS}`);
+    cfgLogged = true;
+  }
 }
 
 function logHealth() {

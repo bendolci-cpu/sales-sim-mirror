@@ -53,20 +53,57 @@ class MessageDispatcher {
   private maxRetries = 3;
   private retryDelay = 1000; // Start with 1 second
   private awaitingAI = false;
+  private isRegistered = false;
+  private ttsPlaying = false;
+  private lastDroppedHash: string | null = null;
 
-  // Register a message handler
+  // Register a message handler (idempotent)
   registerHandler(handler: MessageHandler) {
+    if (this.isRegistered) {
+      logInfo('[Dispatcher] register skipped (already)');
+      return;
+    }
     this.handlers.push(handler);
-    logInfo('[MessageDispatcher] Registered handler', { handlerCount: this.handlers.length });
+    this.isRegistered = true;
+    logInfo('[Dispatcher] register (idempotent)', { handlerCount: this.handlers.length });
   }
 
-  // Remove a message handler
+  // Remove a message handler (idempotent)
   unregisterHandler(handler: MessageHandler) {
+    if (!this.isRegistered) {
+      logInfo('[Dispatcher] unregister skipped (already)');
+      return;
+    }
     const index = this.handlers.indexOf(handler);
     if (index > -1) {
       this.handlers.splice(index, 1);
-      logInfo('[MessageDispatcher] Unregistered handler', { handlerCount: this.handlers.length });
     }
+    this.isRegistered = false;
+    logInfo('[Dispatcher] unregister (idempotent)', { handlerCount: this.handlers.length });
+  }
+
+  // Toggle TTS playing state for dispatcher behavior
+  setTtsPlaying(isPlaying: boolean) {
+    this.ttsPlaying = isPlaying;
+    // Reset per-utterance drop dedupe when state flips
+    if (!isPlaying) this.lastDroppedHash = null;
+    logInfo(`[Dispatcher] ttsPlaying=${isPlaying}`);
+  }
+
+  // Cancel all pending user messages
+  cancelPending(reason: string): number {
+    const count = this.messageQueue.length + (mutedBuffer ? 1 : 0);
+    this.messageQueue = [];
+    mutedBuffer = null;
+    logInfo(`[Dispatcher] Cancelled ${count} pending: ${reason}`);
+    return count;
+  }
+
+  // Get current dispatcher phase for ASR gating
+  getPhase(): 'tts' | 'inflight' | 'idle' {
+    if (this.ttsPlaying) return 'tts';
+    if (this.awaitingAI) return 'inflight';
+    return 'idle';
   }
 
   // Connect the dispatcher (idempotent)
@@ -107,6 +144,16 @@ class MessageDispatcher {
   async sendMessage(request: MessageRequest): Promise<MessageResponse | null> {
     if (!request.text || !request.text.trim()) {
       logWarn('[MessageDispatcher] Empty message, ignoring');
+      return null;
+    }
+
+    // Drop speech during TTS (no queue) - log once per utterance
+    if (this.ttsPlaying && request.metadata.source === 'speech') {
+      const hash = (request.text || '').trim();
+      if (hash && hash !== this.lastDroppedHash) {
+        logInfo('[Dispatcher] Dropping msg during TTS (no-queue) len=' + request.text.length);
+        this.lastDroppedHash = hash;
+      }
       return null;
     }
 
@@ -320,4 +367,19 @@ export function clearMessageQueue() {
 
 export function flushMutedBufferIfReady() {
   messageDispatcher.flushMutedBufferIfReady();
+}
+
+// Expose TTS state control for the dispatcher
+export function setDispatcherTtsPlaying(isPlaying: boolean) {
+  (messageDispatcher as any).setTtsPlaying(isPlaying);
+}
+
+// Expose cancellation of pending messages (e.g., on barge-in)
+export function cancelDispatcherPending(reason: string): number {
+  return (messageDispatcher as any).cancelPending(reason);
+}
+
+// Expose current dispatcher phase
+export function getDispatcherPhase(): 'tts' | 'inflight' | 'idle' {
+  return (messageDispatcher as any).getPhase();
 }

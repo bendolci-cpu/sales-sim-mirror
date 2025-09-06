@@ -3,7 +3,7 @@
 
 import { info, warn, error, debug } from './logger';
 import { createEnhancedSpeech, type EnhancedSpeechControls, getASRInterimFlag } from './speech/enhancedSpeech';
-import { setMuted } from './messageDispatcher';
+import { setMuted, setDispatcherTtsPlaying, cancelDispatcherPending } from './messageDispatcher';
 import { useState, useEffect } from 'react';
 
 export interface UnifiedAudioPipelineConfig {
@@ -267,6 +267,7 @@ export class UnifiedAudioPipeline {
 
     // Gate ASR during TTS and set mute state
     this.speech?.setTTSPlaying(true);
+    setDispatcherTtsPlaying(true);
     setMuted(true);
 
     // Start AI analyzer at TTS start
@@ -322,6 +323,7 @@ export class UnifiedAudioPipeline {
       // Always ensure proper cleanup on completion/abort/error
       this.stopBargeInMonitoring();
       this.speech?.setTTSPlaying(false);
+      setDispatcherTtsPlaying(false);
       setMuted(false);
       this.speech?.startQuietGate();
       this.config.onTTSEnd?.(turnId);
@@ -605,6 +607,7 @@ export class UnifiedAudioPipeline {
     
     // Ensure ASR is properly un-gated and mute state is cleared
     this.speech?.setTTSPlaying(false);
+    setDispatcherTtsPlaying(false);
     setMuted(false);
     this.speech?.startQuietGate();
     
@@ -674,6 +677,7 @@ export class UnifiedAudioPipeline {
     
     // Clear TTS playing state and mute
     this.speech?.setTTSPlaying(false);
+    setDispatcherTtsPlaying(false);
     setMuted(false);
     
     // Clear abort controller
@@ -830,6 +834,7 @@ export class UnifiedAudioPipeline {
           sustainTime: `${sustainTime}ms`
         });
 
+        try { cancelDispatcherPending('barge-in'); } catch {}
         this.interruptTTS('barge-in');
 
         // Brief delay before restarting recognition to ensure clean state
