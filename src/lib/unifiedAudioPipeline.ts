@@ -1076,11 +1076,7 @@ export class UnifiedAudioPipeline {
     }
   }
 
-  // Force cleanup for testing scenarios
-  forceCleanup(): void {
-    info('AUDIO', 'Force cleanup initiated');
-    this.cleanup();
-  }
+  
 
   // Self-test method to play a short beep for audio routing verification
   async playSelfTest(): Promise<void> {
