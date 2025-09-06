@@ -534,6 +534,22 @@ function SessionInner() {
               isInitializing={isInitializing}
             />
             
+            {/* Self-Test Button */}
+            <div className="flex justify-center">
+              <button
+                onClick={async () => {
+                  try { 
+                    await unifiedPipeline.current?.playSelfTest(); 
+                  } catch (e) { 
+                    logError('[Session] Self-test failed:', e); 
+                  }
+                }}
+                className="rounded-lg px-3 py-2 text-sm bg-gray-700 text-white hover:bg-gray-800"
+              >
+                Beep Test
+              </button>
+            </div>
+            
             {/* Chat Window */}
             {showChat && (
               <div className="rounded-lg border border-gray-200 bg-white p-4">
