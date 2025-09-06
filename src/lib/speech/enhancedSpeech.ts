@@ -44,9 +44,9 @@ const HEALTH_LOG_INTERVAL = 5000; // Health check interval
 const RESTART_DELAY = 150; // Delay before auto-restart
 
 // VAD Configuration - Custom utterance finalization timing
-const MIN_SPEECH_MS = 700; // Minimum continuous speech before we consider finalizing
-const REQUIRED_SILENCE_MS = 400; // Continuous silence required to finalize (350-500ms range)
-const OVERALL_SILENCE_TIMEOUT_MS = 1350; // Fallback finalize if user stops speaking (1200-1500ms range)
+const MIN_SPEECH_MS = 450; // Minimum continuous speech before we consider finalizing
+const REQUIRED_SILENCE_MS = 300; // Continuous silence required to finalize (350-500ms range)
+const OVERALL_SILENCE_TIMEOUT_MS = 1200; // Fallback finalize if user stops speaking (1200-1500ms range)
 
 // Meta/filler phrases to drop
 const META_PHRASES = [
@@ -418,7 +418,11 @@ function calculateBoostedConfidence(transcript: string, baseConfidence: number):
 // Check if text is a meta phrase
 function isMetaPhrase(text: string): boolean {
   const lower = text.toLowerCase().trim();
-  return META_PHRASES.some(phrase => lower.includes(phrase));
+  const tokenCount = lower.split(/\s+/).length;
+  if (tokenCount <= 2) {
+    return META_PHRASES.some(p => lower === p || lower.startsWith(p + ' '));
+  }
+  return false;
 }
 
 // Set TTS playing state
