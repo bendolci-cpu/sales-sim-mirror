@@ -37,7 +37,7 @@ export function setMuted(v: boolean) {
   
   // If unmuted, try to flush any buffered message
   if (!v) {
-    flushMutedBufferIfReady();
+    flushMutedBufferIfReady(); 
   }
 }
 
