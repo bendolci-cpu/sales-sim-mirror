@@ -52,23 +52,6 @@ export async function POST(request: NextRequest) {
 
     const responseText = completion.choices[0]?.message?.content?.trim() || "I didn't catch that. Could you please repeat?";
 
-    // Track usage for budget management
-    try {
-      if (completion.usage) {
-        await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/budget/track`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: 'gpt-4o-mini',
-            usage: completion.usage
-          })
-        });
-      }
-    } catch (err) {
-      error("CHAT", "Failed to track budget usage:", err);
-      // Continue without budget tracking
-    }
-
     info("CHAT", "Generated response successfully", {
       responseLength: responseText.length
     });

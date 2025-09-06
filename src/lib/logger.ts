@@ -1,5 +1,5 @@
 // Smart logger with timestamp, domain tags, and de-duplication
-// Reduces console noise by preventing repeated identical messages within 1 second
+// Reduces console noise by preventing repeated identical messages within 2 seconds
 
 interface LogEntry {
   timestamp: number;
@@ -13,7 +13,7 @@ const dedupeMap = new Map<string, LogEntry>();
 setInterval(() => {
   const now = Date.now();
   for (const [message, entry] of dedupeMap.entries()) {
-    if (now - entry.timestamp > 1000) {
+    if (now - entry.timestamp > 2000) {
       dedupeMap.delete(message);
     }
   }
@@ -28,8 +28,8 @@ function shouldLog(message: string): boolean {
     return true;
   }
   
-  // If within 1 second, increment count and don't log
-  if (now - existing.timestamp < 1000) {
+  // If within 2 seconds, increment count and don't log
+  if (now - existing.timestamp < 2000) {
     existing.count++;
     return false;
   }

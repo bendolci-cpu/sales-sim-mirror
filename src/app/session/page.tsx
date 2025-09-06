@@ -10,7 +10,6 @@ import { SCENARIOS } from "@/data/scenarios";
 
 import CallBar from "@/components/CallBar";
 import DebugToggle from "@/components/DebugToggle";
-import AudioDeviceSelector from "@/components/AudioDeviceSelector";
 import { logInfo, logError } from "@/lib/logger";
 import { registerMessageHandler, unregisterMessageHandler, connectMessageDispatcher, disconnectMessageDispatcher, setMuted, isMuted } from "@/lib/messageDispatcher";
 import { getUnifiedAudioPipeline, cleanupUnifiedAudioPipeline, useAudioDebugOverlay } from "@/lib/unifiedAudioPipeline";
@@ -50,6 +49,7 @@ function SessionInner() {
   
   // State
   const [voiceConnected, setVoiceConnected] = useState(false);
+  const voiceConnectedRef = useRef(false);
   const [isInitializing, setIsInitializing] = useState(false);
   const [isToggling, setIsToggling] = useState(false);
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -113,6 +113,11 @@ function SessionInner() {
       });
     }
   }, []);
+  
+  // Keep voiceConnectedRef in sync with voiceConnected state
+  useEffect(() => {
+    voiceConnectedRef.current = voiceConnected;
+  }, [voiceConnected]);
   
   // Debug overlay polling
   useEffect(() => {
@@ -178,9 +183,10 @@ function SessionInner() {
       });
       
       // Play TTS if connected
-      if (voiceConnected && unifiedPipeline.current) {
+      if (voiceConnectedRef.current && unifiedPipeline.current) {
         try {
           const turnId = aiTurn.id;
+          logInfo('[Session] About to play TTS', { connected: voiceConnectedRef.current, hasPipeline: !!unifiedPipeline.current });
           await unifiedPipeline.current.playTTS(aiResponse, turnId);
         } catch (error) {
           logError(`[Session] TTS failed for turn ${aiTurn.id}:`, error);
@@ -277,17 +283,15 @@ function SessionInner() {
           logInfo("[Session] Starting TTS for greeting...");
           const greetingTurnId = greetingTurn.id;
           
-          // Wrap TTS with mute gating and guarantee unmute and restart recognition
-          setMuted(true);
-          try {
-            await unifiedPipeline.current.playTTS(greeting, greetingTurnId);
-          } finally {
-            setMuted(false);
-            // Restart recognition after greeting finishes
+          // TTS will handle mute/unmute via onTTSStart/onTTSEnd callbacks
+          await unifiedPipeline.current.playTTS(greeting, greetingTurnId);
+          
+          // Small delay before restarting recognition to give ASR a clean state
+          setTimeout(() => {
             if (unifiedPipeline.current) {
               unifiedPipeline.current.startSpeech();
             }
-          }
+          }, 200);
           
           logInfo("[Session] Greeting TTS completed");
         } catch (error) {
@@ -560,9 +564,6 @@ function SessionInner() {
                 />
               </div>
             )}
-
-            {/* Audio Device Selector */}
-            <AudioDeviceSelector />
 
             {/* Pipeline Status */}
             <div className="rounded-lg border border-green-200 bg-green-50 p-4">

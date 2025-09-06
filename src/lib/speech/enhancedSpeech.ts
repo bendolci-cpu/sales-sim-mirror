@@ -93,6 +93,9 @@ let isGating = false;
 // Interim text buffer for continuous ASR (used in onresult)
 let interimBuffer = '';
 
+// Interim flag for barge-in detection
+let hasInterim = false;
+
 // Duplicate suppression
 const recentUtterances = new Map<string, number>(); // hash -> timestamp
 
@@ -245,6 +248,10 @@ function handleInterimResult(transcript: string, confidence: number) {
   
   // Emit interim result if not in TTS or quiet gate
   if (!ttsPlaying && !isInQuietGate) {
+    // Set interim flag for barge-in detection when transcript is non-empty
+    if (transcript.trim().length > 0) {
+      hasInterim = true;
+    }
     handlers.onInterim?.(transcript);
   }
 }
@@ -303,6 +310,9 @@ function finalizeCurrentUtterance() {
   // Process the final result
   processFinalResult(transcript, 0.9); // Use high confidence for our VAD-controlled results
   
+  // Clear interim flag when finalizing utterance
+  hasInterim = false;
+  
   // Reset VAD state
   resetVADState();
 }
@@ -330,17 +340,26 @@ function resetVADState() {
     vadState.overallTimer = null;
   }
   
+  // Clear interim flag when resetting VAD state
+  hasInterim = false;
+  
   debug('SPEECH', 'VAD state reset');
 }
 
 // Process final speech result
 function processFinalResult(transcript: string, confidence: number) {
   const now = Date.now();
-  const duration = 0; // We'll calculate this if needed
+  const duration = Date.now() - vadState.speechStartTime;
   
   // Skip if in quiet gate
   if (isInQuietGate) {
     debug('SPEECH', 'Dropping result in quiet gate');
+    return;
+  }
+  
+  // Skip if too short (regardless of confidence)
+  if (duration < 200) {
+    debug('SPEECH', `Dropping short utterance: "${transcript}" (${duration}ms < 200ms)`);
     return;
   }
   
@@ -535,4 +554,9 @@ export function createEnhancedSpeech(handlersParam: Handlers): EnhancedSpeechCon
       vad_speech_duration: vadState.isSpeaking ? Date.now() - vadState.speechStartTime : 0
     })
   };
+}
+
+// Export getter for interim flag (for barge-in detection)
+export function getASRInterimFlag(): boolean {
+  return hasInterim;
 }

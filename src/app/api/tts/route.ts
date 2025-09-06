@@ -88,11 +88,16 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // For POST requests, use the same logic as GET
+    // Build a new Request object with text as query param
     const url = new URL(request.url);
     url.searchParams.set('text', text);
     
-    return GET(request);
+    const newRequest = new Request(url.toString(), {
+      method: 'GET',
+      headers: request.headers,
+    });
+    
+    return GET(newRequest);
   } catch (error) {
     console.error('TTS POST error:', error);
     return NextResponse.json(

@@ -28,9 +28,17 @@ export type MessageHandler = (request: MessageRequest) => Promise<MessageRespons
 // Module-level mute flag as specified in requirements
 let muted = false;
 
+// Buffer for speech while muted
+let mutedBuffer: MessageRequest | null = null;
+
 export function setMuted(v: boolean) { 
   muted = v; 
   logInfo(`[MessageDispatcher] Mute state changed to: ${v}`);
+  
+  // If unmuted, try to flush any buffered message
+  if (!v) {
+    flushMutedBufferIfReady();
+  }
 }
 
 export function isMuted() { 
@@ -102,9 +110,13 @@ class MessageDispatcher {
       return null;
     }
 
-    // Check if muted - drop message if muted as specified in requirements
+    // Check if muted - buffer the message instead of dropping
     if (muted) {
-      logInfo('[MessageDispatcher] Message dropped due to mute state', { queueLength: this.messageQueue.length });
+      mutedBuffer = request; // Overwrite any previous buffered message
+      logInfo('[MessageDispatcher] Message buffered due to mute state', { 
+        text: request.text.slice(0, 60) + (request.text.length > 60 ? '...' : ''),
+        source: request.metadata.source
+      });
       return null;
     }
 
@@ -146,7 +158,7 @@ class MessageDispatcher {
     
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       try {
-        // Try all handlers
+        // Try handlers until one succeeds
         for (const handler of this.handlers) {
           try {
             const response = await handler(request);
@@ -160,6 +172,9 @@ class MessageDispatcher {
               // Process any queued messages
               this.awaitingAI = false;
               this.processQueue();
+              
+              // Also try to flush any buffered message
+              this.flushMutedBufferIfReady();
               
               return response;
             } else {
@@ -189,6 +204,9 @@ class MessageDispatcher {
           
           this.awaitingAI = false;
           this.processQueue();
+          
+          // Also try to flush any buffered message
+          this.flushMutedBufferIfReady();
           
           return {
             id: messageId,
@@ -242,6 +260,19 @@ class MessageDispatcher {
     this.messageQueue = [];
     logInfo('[MessageDispatcher] Queue cleared');
   }
+
+  // Flush muted buffer if ready
+  flushMutedBufferIfReady() {
+    if (!muted && this.connected && !this.awaitingAI && mutedBuffer) {
+      const bufferedRequest = mutedBuffer;
+      mutedBuffer = null;
+      logInfo('[MessageDispatcher] Flushing buffered message', { 
+        text: bufferedRequest.text.slice(0, 60) + (bufferedRequest.text.length > 60 ? '...' : ''),
+        source: bufferedRequest.metadata.source
+      });
+      this.sendMessage(bufferedRequest);
+    }
+  }
 }
 
 // Singleton instance
@@ -282,4 +313,8 @@ export function isAwaitingAI(): boolean {
 
 export function clearMessageQueue() {
   messageDispatcher.clearQueue();
+}
+
+export function flushMutedBufferIfReady() {
+  messageDispatcher.flushMutedBufferIfReady();
 }
