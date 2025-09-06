@@ -263,10 +263,13 @@ class MessageDispatcher {
 
   // Flush muted buffer if ready
   flushMutedBufferIfReady() {
-    if (!muted && this.connected && !this.awaitingAI && mutedBuffer) {
+    // On unmute, immediately send the latest buffered message (if any),
+    // regardless of connection or awaiting state. The normal send flow
+    // will queue it appropriately if needed.
+    if (!muted && mutedBuffer) {
       const bufferedRequest = mutedBuffer;
       mutedBuffer = null;
-      logInfo('[MessageDispatcher] Flushing buffered message', { 
+      logInfo('[MessageDispatcher] Flushing buffered message', {
         text: bufferedRequest.text.slice(0, 60) + (bufferedRequest.text.length > 60 ? '...' : ''),
         source: bufferedRequest.metadata.source
       });

@@ -26,14 +26,19 @@ export class UnifiedAudioPipeline {
   private aiSource: MediaStreamAudioSourceNode | null = null;
   private aiAnalyser: AnalyserNode | null = null;
   private ttsEl: HTMLAudioElement | null = null;
+  private ttsAudioEndedHandler: ((ev: Event) => void) | null = null;
+  private ttsAudioErrorHandler: ((ev: Event) => void) | null = null;
   private ttsAbortController: AbortController | null = null;
   private currentClientUtterance: SpeechSynthesisUtterance | null = null;
+  private clientUtteranceOnEnd: ((event: SpeechSynthesisEvent) => void) | null = null;
+  private clientUtteranceOnError: ((event: SpeechSynthesisErrorEvent) => void) | null = null;
   private speech: EnhancedSpeechControls | null = null;
   private bargeInMonitoring: boolean = false;
   private bargeInInterval: NodeJS.Timeout | null = null;
   private bargeInTimer: NodeJS.Timeout | null = null;
   private bargeInTriggered: boolean = false; // Track if barge-in has been triggered for current TTS
   private ttsCanceledByBarge: boolean = false; // Track if TTS was canceled by barge-in
+  private _ttsCanceledExternally: boolean = false; // Track if TTS was canceled externally (e.g., interruptTTS)
   private healthInterval: NodeJS.Timeout | null = null;
   private restartDebounceTimer: NodeJS.Timeout | null = null;
   private _isInitialized: boolean = false;
@@ -63,6 +68,10 @@ export class UnifiedAudioPipeline {
   private readonly MIC_DB_THRESH = 0.10;
   private readonly SUSTAIN_MS = 200;
   private readonly REFRACTORY_MS = 700;
+  private readonly ON_BARGE_IN_DEBOUNCE_MS = 300;
+
+  // Debounce timestamp for external onBargeIn callback
+  private lastOnBargeInAt: number = 0;
 
   constructor(config: UnifiedAudioPipelineConfig) {
     this.config = config;
@@ -207,7 +216,7 @@ export class UnifiedAudioPipeline {
           onResult: (text, confidence) => this.config.onSpeechResult?.(text, confidence),
           onFinalResult: (text, confidence) => this.config.onFinalResult?.(text, confidence),
           onError: (error) => this.config.onSpeechError?.(error),
-          onBargeIn: () => this.config.onBargeIn?.(),
+          onBargeIn: () => this.emitBargeIn(),
           onQuietGateStart: () => this.config.onQuietGateStart?.(),
           onQuietGateEnd: () => this.config.onQuietGateEnd?.(),
           onQuietGateCancel: () => this.config.onQuietGateCancel?.(),
@@ -239,7 +248,8 @@ export class UnifiedAudioPipeline {
     // Guard: ensure initialized first
     await this.initialize();
 
-    // Stop any existing TTS
+    // Reset external cancel flag and stop any existing TTS
+    this._ttsCanceledExternally = false;
     this.stopTTS();
 
     // Set new abort controller
@@ -360,11 +370,59 @@ export class UnifiedAudioPipeline {
       info('AUDIO', 'AI_ANALYZER_READY:true');
     }
 
-    // Assign and play
+    // Assign and play, then wait for completion or error
     this.ttsEl!.src = objectUrl;
-    await this.ttsEl!.play();
-    
-    info('TTS', 'Server playback started', { turnId });
+
+    await new Promise<void>((resolve, reject) => {
+      const handleEnded = () => {
+        cleanup();
+        if (this._ttsCanceledExternally) {
+          resolve();
+          return;
+        }
+        info('TTS', 'Server playback finished', { turnId });
+        resolve();
+      };
+      const handleError = (ev: Event) => {
+        cleanup();
+        if (this._ttsCanceledExternally) {
+          resolve();
+          return;
+        }
+        reject(new Error('Server TTS playback error'));
+      };
+      const cleanup = () => {
+        if (this.ttsEl && this.ttsAudioEndedHandler) {
+          this.ttsEl.removeEventListener('ended', this.ttsAudioEndedHandler);
+          this.ttsAudioEndedHandler = null;
+        }
+        if (this.ttsEl && this.ttsAudioErrorHandler) {
+          this.ttsEl.removeEventListener('error', this.ttsAudioErrorHandler);
+          this.ttsAudioErrorHandler = null;
+        }
+        if (this.ttsEl && this.ttsEl.src && this.ttsEl.src.startsWith('blob:')) {
+          try { URL.revokeObjectURL(this.ttsEl.src); } catch {}
+        }
+      };
+
+      this.ttsAudioEndedHandler = handleEnded;
+      this.ttsAudioErrorHandler = handleError;
+      this.ttsEl!.addEventListener('ended', this.ttsAudioEndedHandler, { once: true });
+      this.ttsEl!.addEventListener('error', this.ttsAudioErrorHandler, { once: true });
+
+      this.ttsEl!.play()
+        .then(() => {
+          info('TTS', 'Server playback started', { turnId });
+        })
+        .catch((err) => {
+          cleanup();
+          if (this._ttsCanceledExternally) {
+            resolve();
+            return;
+          }
+          reject(err);
+        });
+    });
   }
 
   private async playClientTTS(text: string, turnId: string): Promise<void> {
@@ -411,27 +469,60 @@ export class UnifiedAudioPipeline {
         }
       };
 
-      utterance.onend = () => {
+      this.clientUtteranceOnEnd = () => {
+        // Remove listeners
+        if (this.currentClientUtterance && this.clientUtteranceOnEnd) {
+          this.currentClientUtterance.onend = null as any;
+        }
+        if (this.currentClientUtterance && this.clientUtteranceOnError) {
+          this.currentClientUtterance.onerror = null as any;
+        }
+        this.clientUtteranceOnEnd = null;
+        this.clientUtteranceOnError = null;
+
         this.currentClientUtterance = null;
         this.ttsCanceledByBarge = false;
+        if (this._ttsCanceledExternally) {
+          resolve();
+          return;
+        }
         info('TTS', 'Client playback finished', { turnId });
         resolve();
       };
 
-      utterance.onerror = (event) => {
+      this.clientUtteranceOnError = (event: SpeechSynthesisErrorEvent) => {
+        // Remove listeners
+        if (this.currentClientUtterance && this.clientUtteranceOnEnd) {
+          this.currentClientUtterance.onend = null as any;
+        }
+        if (this.currentClientUtterance && this.clientUtteranceOnError) {
+          this.currentClientUtterance.onerror = null as any;
+        }
+        const localUtterance = this.currentClientUtterance;
+        this.clientUtteranceOnEnd = null;
+        this.clientUtteranceOnError = null;
         this.currentClientUtterance = null;
         
         // Handle "interrupted" error from barge-in as expected behavior
-        if (event.error === 'interrupted' && this.ttsCanceledByBarge) {
-          info('TTS', 'Client TTS interrupted by barge-in (expected)', { turnId });
+        if (event.error === 'interrupted' && (this.ttsCanceledByBarge || this._ttsCanceledExternly)) {
+          debug('TTS', 'Client TTS interrupted by barge-in (expected)', { turnId });
           this.ttsCanceledByBarge = false;
           resolve(); // Resolve instead of reject for expected interruption
           return;
         }
         
-        error('TTS', 'Client playback error:', event.error);
-        reject(new Error(`Client TTS error: ${event.error || 'unknown'}`));
+        // If externally canceled, resolve quietly without warnings
+        if (this._ttsCanceledExternally) {
+          resolve();
+          return;
+        }
+        
+        error('TTS', 'Client playback error:', (event as any)?.error);
+        reject(new Error(`Client TTS error: ${(event as any)?.error || 'unknown'}`));
       };
+
+      utterance.onend = this.clientUtteranceOnEnd as any;
+      utterance.onerror = this.clientUtteranceOnError as any;
 
       speechSynthesis.speak(utterance);
     });
@@ -473,6 +564,13 @@ export class UnifiedAudioPipeline {
     try { 
       window.speechSynthesis?.cancel(); 
     } catch {}
+    // Remove bound handlers to prevent double-firing in future turns
+    if (this.currentClientUtterance) {
+      try { (this.currentClientUtterance as any).onend = null; } catch {}
+      try { (this.currentClientUtterance as any).onerror = null; } catch {}
+    }
+    this.clientUtteranceOnEnd = null;
+    this.clientUtteranceOnError = null;
     this.currentClientUtterance = null;
   }
 
@@ -514,6 +612,72 @@ export class UnifiedAudioPipeline {
     this.debouncedRestartSpeechRecognition();
     
     info('AUDIO', 'TTS stopped');
+  }
+
+  // Hard stop for TTS - forcibly interrupt regardless of state
+  interruptTTS(reason: string = 'barge-in'): void {
+    // Mark as externally canceled so handlers resolve quietly
+    this._ttsCanceledExternally = true;
+    // Stop barge-in monitoring early to avoid reentrancy loops
+    this.stopBargeInMonitoring();
+    // Cut quiet gate immediately on barge-in
+    this.clearQuietGate();
+    // Handle Web Speech cancellation
+    try {
+      window.speechSynthesis?.cancel();
+    } catch (err) {
+      // Ignore errors during forced cancellation
+    }
+    
+    // Handle HTMLAudioElement interruption
+    if (this.ttsEl) {
+      try {
+        this.ttsEl.pause();
+        this.ttsEl.currentTime = 0;
+        this.ttsEl.src = ''; // Break decode and clear source
+        // Remove audio element listeners if present
+        if (this.ttsAudioEndedHandler) {
+          try { this.ttsEl.removeEventListener('ended', this.ttsAudioEndedHandler); } catch {}
+          this.ttsAudioEndedHandler = null;
+        }
+        if (this.ttsAudioErrorHandler) {
+          try { this.ttsEl.removeEventListener('error', this.ttsAudioErrorHandler); } catch {}
+          this.ttsAudioErrorHandler = null;
+        }
+        // Remove event listeners by cloning the element
+        const newEl = this.ttsEl.cloneNode(false) as HTMLAudioElement;
+        this.ttsEl.parentNode?.replaceChild(newEl, this.ttsEl);
+        this.ttsEl = newEl;
+      } catch (err) {
+        // Ignore errors during forced interruption
+      }
+    }
+    
+    // Clear internal flags and state
+    this.currentClientUtterance = null;
+    this.ttsCanceledByBarge = false;
+    this.bargeInTriggered = false;
+    this.currentTurnId = null;
+    
+    // Clear timers
+    if (this.restartDebounceTimer) {
+      clearTimeout(this.restartDebounceTimer);
+      this.restartDebounceTimer = null;
+    }
+    
+    // Clear TTS playing state and mute
+    this.speech?.setTTSPlaying(false);
+    setMuted(false);
+    
+    // Clear abort controller
+    if (this.ttsAbortController) {
+      try {
+        this.ttsAbortController.abort();
+      } catch {}
+      this.ttsAbortController = null;
+    }
+    
+    info('AUDIO', `TTS forcibly interrupted (reason: ${reason})`);
   }
 
   private startBargeInMonitoring(): void {
@@ -580,6 +744,13 @@ export class UnifiedAudioPipeline {
     debug('AUDIO', 'Stopped barge-in monitoring');
   }
 
+  // Immediately cancel any active quiet gate to allow ASR to resume
+  private clearQuietGate(): void {
+    try {
+      this.speech?.cancelQuietGate();
+    } catch {}
+  }
+
   private checkBargeIn(): void {
     if (!this.micAnalyzer || !this.aiAnalyser) return;
 
@@ -644,21 +815,8 @@ export class UnifiedAudioPipeline {
           sustainTime: sustainTime + 'ms'
         });
         
-        // Stop/pause TTS promise chain once (idempotent)
-        this.ttsEl?.pause();
-        if (this.ttsAbortController) {
-          this.ttsAbortController.abort();
-        }
-        this.cancelClientTTS();
-        
-        // Stop barge-in monitoring immediately
-        this.stopBargeInMonitoring();
-        
-        // Handle ASR restart and mute state
-        this.speech?.pauseRecognitionLoop();
-        this.speech?.setTTSPlaying(false);
-        setMuted(false);
-        this.speech?.startQuietGate();
+        // Use comprehensive TTS interruption
+        this.interruptTTS('barge-in');
         
         // Brief delay before restarting recognition to ensure clean state
         setTimeout(() => {
@@ -666,7 +824,7 @@ export class UnifiedAudioPipeline {
           info('BARGE-IN', 'ASR restarted after barge-in');
         }, 100);
         
-        this.config.onBargeIn?.();
+        this.emitBargeIn();
       }
     } else {
       // Reset barge state if speech candidate conditions not met
@@ -686,6 +844,16 @@ export class UnifiedAudioPipeline {
     }
     
     return Math.sqrt(sum / dataArray.length) / 255;
+  }
+
+  // Debounced emitter for external onBargeIn callback
+  private emitBargeIn(): void {
+    const now = Date.now();
+    if (now - this.lastOnBargeInAt < this.ON_BARGE_IN_DEBOUNCE_MS) {
+      return;
+    }
+    this.lastOnBargeInAt = now;
+    this.config.onBargeIn?.();
   }
 
   // Public method to get current mic RMS for debug overlay

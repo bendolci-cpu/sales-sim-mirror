@@ -85,8 +85,9 @@ function SessionInner() {
         },
         onBargeIn: () => {
           logInfo('[Session] Barge-in triggered');
-          // Unmute dispatcher so next user speech can be sent
-          setMuted(false);
+          // TTS interruption and mute handling already done by interruptTTS
+          // Just ensure ASR is restarted
+          unifiedPipeline.current?.startSpeech();
         },
         onTTSStart: () => {
           logInfo(`[Session] TTS started`);
