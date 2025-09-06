@@ -69,45 +69,23 @@ export async function POST(request: NextRequest) {
       // Continue without budget tracking
     }
 
-    // Generate TTS URL for the response
-    let ttsUrl = null;
-    try {
-      const ttsResponse = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/tts?text=${encodeURIComponent(responseText)}`);
-      if (ttsResponse.ok) {
-        const ttsData = await ttsResponse.json();
-        ttsUrl = ttsData.audioUrl;
-      }
-    } catch (err) {
-      error("CHAT", "TTS generation failed:", err);
-      // Continue without TTS - the response will still be returned
-    }
-
-    const response = {
-      content: responseText,
-      response: responseText, // For backward compatibility
-      audioUrl: ttsUrl,
-      success: true
-    };
-
     info("CHAT", "Generated response successfully", {
-      responseLength: responseText.length,
-      hasTTS: !!ttsUrl
+      responseLength: responseText.length
     });
 
-    return NextResponse.json(response);
+    return NextResponse.json({
+      content: responseText,
+      success: true
+    });
 
   } catch (err) {
     error("CHAT", "Error generating response:", err);
     
-    // Return a fallback response even if TTS fails
-    const fallbackResponse = {
+    // Return a fallback response
+    return NextResponse.json({
       content: "I'm having trouble processing that right now. Could you please try again?",
-      response: "I'm having trouble processing that right now. Could you please try again?",
-      audioUrl: null,
       success: false,
-      error: error instanceof Error ? error.message : "Unknown error"
-    };
-
-    return NextResponse.json(fallbackResponse, { status: 500 });
+      error: err instanceof Error ? err.message : "Unknown error"
+    }, { status: 500 });
   }
 }
