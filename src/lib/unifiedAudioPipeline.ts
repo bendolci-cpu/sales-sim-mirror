@@ -504,7 +504,7 @@ export class UnifiedAudioPipeline {
         this.currentClientUtterance = null;
         
         // Handle "interrupted" error from barge-in as expected behavior
-        if (event.error === 'interrupted' && (this.ttsCanceledByBarge || this._ttsCanceledExternly)) {
+        if (event.error === 'interrupted' && (this.ttsCanceledByBarge || this._ttsCanceledExternally)) {
           debug('TTS', 'Client TTS interrupted by barge-in (expected)', { turnId });
           this.ttsCanceledByBarge = false;
           resolve(); // Resolve instead of reject for expected interruption
@@ -616,6 +616,13 @@ export class UnifiedAudioPipeline {
 
   // Hard stop for TTS - forcibly interrupt regardless of state
   interruptTTS(reason: string = 'barge-in'): void {
+    // Quick guard to avoid double work if nothing is currently active
+    if (!this.isTTSActive() && !this.ttsEl?.src) {
+      this._ttsCanceledExternally = true;
+      this.speech?.setTTSPlaying(false);
+      setMuted(false);
+      return;
+    }
     // Mark as externally canceled so handlers resolve quietly
     this._ttsCanceledExternally = true;
     // Stop barge-in monitoring early to avoid reentrancy loops
@@ -686,6 +693,16 @@ export class UnifiedAudioPipeline {
     // Check if mic is ready before starting barge-in monitoring
     if (!this.isMicReady()) {
       info('AUDIO', 'Mic not ready, skipping barge-in monitoring');
+      return;
+    }
+
+    // Early exit for client TTS mode: don't wire aiAnalyser
+    if (process.env.NEXT_PUBLIC_TTS_MODE === 'client') {
+      this.bargeInMonitoring = true;
+      info('AUDIO', 'BARGE_MONITORING_START mic:true ai:false (client TTS)');
+      this.bargeInInterval = setInterval(() => {
+        this.checkBargeIn();
+      }, this.BARGE_IN_CHECK_INTERVAL);
       return;
     }
 
@@ -765,7 +782,7 @@ export class UnifiedAudioPipeline {
     }
 
     // If TTS not playing, reset barge state
-    if (!this.ttsEl || this.ttsEl.paused) {
+    if (!this.isTTSActive()) {
       this.bargeArmedAt = null;
       return;
     }
@@ -796,34 +813,31 @@ export class UnifiedAudioPipeline {
       
       // If sustained for required duration, trigger barge-in
       if (this.bargeArmedAt !== null && (now - this.bargeArmedAt) >= this.SUSTAIN_MS) {
+        const sustainTime = now - this.bargeArmedAt;
         this.lastBargeAt = now;
         this.bargeArmedAt = null;
-        
+
         // Ensure barge-in is only triggered once per TTS playback (idempotent)
-        if (this.bargeInTriggered) {
-          return;
-        }
-        
+        if (this.bargeInTriggered) return;
+
         this.bargeInTriggered = true;
         this.ttsCanceledByBarge = true;
         const dt = now - this.ttsStartTime;
-        const sustainTime = now - this.bargeArmedAt;
-        info('BARGE-IN', `Sustained speech detected, triggering barge-in`, { 
-          micPower: micPower.toFixed(3), 
-          aiPower: aiPower.toFixed(3), 
-          dt: dt + 'ms',
-          sustainTime: sustainTime + 'ms'
+        info('BARGE-IN', 'Sustained speech detected, triggering barge-in', {
+          micPower: micPower.toFixed(3),
+          aiPower: aiPower.toFixed(3),
+          dt: `${dt}ms`,
+          sustainTime: `${sustainTime}ms`
         });
-        
-        // Use comprehensive TTS interruption
+
         this.interruptTTS('barge-in');
-        
+
         // Brief delay before restarting recognition to ensure clean state
         setTimeout(() => {
           this.speech?.startRecognitionLoop();
           info('BARGE-IN', 'ASR restarted after barge-in');
         }, 100);
-        
+
         this.emitBargeIn();
       }
     } else {
@@ -854,6 +868,18 @@ export class UnifiedAudioPipeline {
     }
     this.lastOnBargeInAt = now;
     this.config.onBargeIn?.();
+  }
+
+  // Helper to detect whether TTS is active across server and client modes
+  private isTTSActive(): boolean {
+    if (process.env.NEXT_PUBLIC_TTS_MODE === 'client') {
+      try {
+        return !!(window.speechSynthesis?.speaking || this.currentClientUtterance);
+      } catch {
+        return !!this.currentClientUtterance;
+      }
+    }
+    return !!(this.ttsEl && !this.ttsEl.paused && !!this.ttsEl.src);
   }
 
   // Public method to get current mic RMS for debug overlay
