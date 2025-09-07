@@ -10,6 +10,7 @@ export interface MessageMetadata {
   confidence?: number;
   duration?: number;
   audioUrl?: string;
+  abortSignal?: AbortSignal;
 }
 
 export interface MessageRequest {
@@ -57,6 +58,7 @@ class MessageDispatcher {
   private isRegistered = false;
   private ttsPlaying = false;
   private lastDroppedHash: string | null = null;
+  private inflightAbort: AbortController | null = null;
 
   // Register a message handler (idempotent)
   registerHandler(handler: MessageHandler) {
@@ -211,6 +213,12 @@ class MessageDispatcher {
   // Process a single message with retry logic
   private async processMessage(request: MessageRequest, messageId: string): Promise<MessageResponse> {
     this.awaitingAI = true;
+    // Create a new AbortController for this in-flight operation
+    this.inflightAbort = new AbortController();
+    // Attach the signal to the request metadata for handlers to use
+    try {
+      request.metadata = { ...request.metadata, abortSignal: this.inflightAbort.signal } as any;
+    } catch {}
     
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       try {
@@ -227,6 +235,7 @@ class MessageDispatcher {
               
               // Process any queued messages
               this.awaitingAI = false;
+              this.inflightAbort = null;
               this.processQueue();
               
               // Also try to flush any buffered message
@@ -259,6 +268,7 @@ class MessageDispatcher {
           });
           
           this.awaitingAI = false;
+          this.inflightAbort = null;
           this.processQueue();
           
           // Also try to flush any buffered message
@@ -278,6 +288,7 @@ class MessageDispatcher {
     }
     
     this.awaitingAI = false;
+    this.inflightAbort = null;
     return {
       id: messageId,
       text: '',
@@ -331,6 +342,19 @@ class MessageDispatcher {
       });
       this.sendMessage(bufferedRequest);
     }
+  }
+
+  // Abort in-flight request and clear state/queue
+  cancelInFlight(reason: string): void {
+    try {
+      if (this.inflightAbort) {
+        this.inflightAbort.abort();
+      }
+    } catch {}
+    this.awaitingAI = false;
+    this.clearQueue();
+    logInfo('[MessageDispatcher] In-flight request canceled', { reason });
+    this.inflightAbort = null;
   }
 }
 
@@ -386,6 +410,11 @@ export function setDispatcherTtsPlaying(isPlaying: boolean) {
 // Expose cancellation of pending messages (e.g., on barge-in)
 export function cancelDispatcherPending(reason: string): number {
   return (messageDispatcher as any).cancelPending(reason);
+}
+
+// Expose cancellation of in-flight request
+export function cancelDispatcherInFlight(reason: string): void {
+  return (messageDispatcher as any).cancelInFlight(reason);
 }
 
 // Expose current dispatcher phase

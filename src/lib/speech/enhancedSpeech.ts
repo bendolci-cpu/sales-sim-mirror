@@ -2,6 +2,9 @@
 // Ensures exactly one recognizer instance with proper start/stop management
 import { info, debug, error, warn } from "@/lib/logger";
 import { sendMessage, getDispatcherPhase } from "@/lib/messageDispatcher";
+// Barge path flags (browser env)
+const BARGE_PATH = (process.env.NEXT_PUBLIC_BARGE_PATH ?? 'legacy');
+const BARGE_ON_ASR = ((process.env.NEXT_PUBLIC_BARGE_ON_ASR ?? '1') === '1');
 
 export interface EnhancedSpeechControls {
   startRecognitionLoop: () => void;
@@ -44,7 +47,7 @@ const HEALTH_LOG_INTERVAL = 5000; // Health check interval
 const RESTART_DELAY = 150; // Delay before auto-restart
 
 // VAD Configuration - Custom utterance finalization timing
-const MIN_SPEECH_MS = 480; // Minimum continuous speech before we consider finalizing (450-500ms)
+const MIN_SPEECH_MS = 200; // Lenient VAD for quicker detection
 const REQUIRED_SILENCE_MS = 350; // Continuous silence required to finalize (300-400ms)
 const OVERALL_SILENCE_TIMEOUT_MS = 2100; // Fallback finalize if user stops speaking (2000-2200ms)
 
@@ -166,6 +169,60 @@ export function startHoldTimer(delayMs: number) {
     emitHeld('timer');
   }, delayMs);
   debug('SPEECH', `Hold timer scheduled: ${delayMs}ms for "${heldFinal}"`);
+}
+
+// ===== TTS buffering with dedup and FIFO flush =====
+function normalizeFingerprint(text: string): string {
+  return (text || '').toLowerCase().trim().replace(/\s+/g, ' ');
+}
+
+const finalsDuringTts = new Set<string>();
+const finalsDuringTtsQueue: string[] = [];
+const fpToText = new Map<string, string>();
+
+export function onBaseFinalWhileTTS(text: string) {
+  const trimmed = (text || '').trim();
+  if (!trimmed) return;
+  const fp = normalizeFingerprint(trimmed);
+  if (finalsDuringTts.has(fp)) {
+    info('SPEECH', '[SPEECH] Queued final during TTS (dedup)');
+    return;
+  }
+  finalsDuringTts.add(fp);
+  finalsDuringTtsQueue.push(fp);
+  fpToText.set(fp, trimmed);
+  info('SPEECH', '[SPEECH] Queued final during TTS', { text: trimmed });
+}
+
+export function notifyTTSStart() {
+  setTTSPlayingState(true);
+}
+
+export function notifyTTSEndOrBargeIn() {
+  setTTSPlayingState(false);
+  let flushed = 0;
+  while (finalsDuringTtsQueue.length) {
+    const fp = finalsDuringTtsQueue.shift()!;
+    const t = fpToText.get(fp) || '';
+    if (!t) continue;
+    setBaseFinal(t, 0.9);
+    emitHeld('tts_end');
+    flushed++;
+  }
+  if (flushed > 0) {
+    info('SPEECH', `[SPEECH] Flushed ${flushed} unique final(s) after TTS`);
+  }
+  finalsDuringTts.clear();
+  fpToText.clear();
+}
+
+export function resetHeldFinalState() {
+  finalsDuringTts.clear();
+  finalsDuringTtsQueue.length = 0;
+  fpToText.clear();
+  // Also clear general hold state without emitting
+  clearHeld();
+  setTTSPlayingState(false);
 }
 
 export function flushHeld() {
@@ -310,6 +367,8 @@ function safeStart() {
   try {
     recognition.start();
     recognitionRunning = true;
+    // Start health monitoring on first successful start (idempotent)
+    startSpeechHealth();
   } catch (e: unknown) {
     // Handle InvalidStateError by retrying once shortly
     if (e instanceof Error && e.name === 'InvalidStateError') {
@@ -333,6 +392,8 @@ function safeStop() {
     warn('SPEECH', 'Error stopping recognition:', e);
   }
   recognitionRunning = false;
+  // Stop health monitoring when recognition stops
+  stopSpeechHealth();
 }
 // Custom VAD Logic Functions
 
@@ -431,9 +492,18 @@ function finalizeCurrentUtterance() {
   try {
     const phase = getDispatcherPhase?.() as any || 'idle';
     if (phase === 'tts' || phase === 'inflight') {
-      setHeld(transcript, 0.9);
-      info('SPEECH', `[SPEECH] Final buffered (phase=${phase}) without scheduling timer: "${transcript}"`);
-      // Clear interim flag and reset VAD state, but do not dispatch yet
+      // Allow-through during legacy+ASR to enable immediate barge at the pipeline
+      const isMeta = isMetaPhrase(transcript);
+      const allowAsrBarge = (BARGE_PATH === 'legacy') && BARGE_ON_ASR && !isMeta;
+      if (allowAsrBarge) {
+        info('SPEECH', '[SPEECH] Passing final through during TTS for legacy ASR barge');
+        try { handlers.onFinal?.(transcript); } catch {}
+        try { (handlers as any).onFinalResult?.(transcript, 0.9); } catch {}
+        hasInterim = false;
+        resetVADState();
+        return;
+      }
+      // Otherwise, let pipeline queue after TTS without buffering here
       hasInterim = false;
       resetVADState();
       return;
@@ -477,6 +547,11 @@ function resetVADState() {
   hasInterim = false;
   
   debug('SPEECH', 'VAD state reset');
+
+  // If recognition is idle, stop health monitoring
+  if (!recognitionRunning) {
+    stopSpeechHealth();
+  }
 }
 
 // Process final speech result
@@ -484,15 +559,12 @@ function processFinalResult(transcript: string, confidence: number) {
   // Early gate: prevent finals from re-entering during TTS or in-flight AI
   const phase = getDispatcherPhase();
   if (phase === 'tts') {
-    // buffer during active TTS
-    setHeld(transcript, confidence);
+    // Buffer during active TTS with idempotent scheduling
+    onBaseFinalWhileTTS(transcript);
     return;
   } else if (phase === 'inflight') {
-    // Buffer incomplete/short finals while model is speaking/streaming
-    setHeld(transcript, confidence);
-    const ms = Math.min(holdMsFor(transcript), MAX_JOIN_MS);
-    if (holdTimer) clearTimeout(holdTimer);
-    holdTimer = window.setTimeout(() => emitHeld('timer'), ms);
+    // Buffer while model is streaming; also idempotent scheduling
+    onBaseFinalWhileTTS(transcript);
     info('SPEECH', `[SPEECH] Final buffered (phase=inflight): "${transcript}"`);
     return;
   } else {
@@ -501,9 +573,14 @@ function processFinalResult(transcript: string, confidence: number) {
   const now = Date.now();
   const duration = Date.now() - vadState.speechStartTime;
   
-  // Skip if in quiet gate
+  // If in quiet gate, never drop finals; queue and emit after gate/soon after
   if (isInQuietGate) {
-    debug('SPEECH', 'Dropping result in quiet gate');
+    try {
+      setBaseFinal(transcript, confidence);
+      const delay = Math.min(holdMsFor(heldFinal), MAX_JOIN_MS);
+      startHoldTimer(delay);
+      debug('SPEECH', 'Queued final during quiet gate');
+    } catch {}
     return;
   }
   
@@ -648,8 +725,11 @@ function cancelQuietGate() {
 }
 
 // Health monitoring
-function startHealthMonitoring() {
-  setInterval(() => {
+let speechHealthInterval: ReturnType<typeof setInterval> | null = null;
+
+function startSpeechHealth() {
+  if (speechHealthInterval) return;
+  speechHealthInterval = setInterval(() => {
     const now = Date.now();
     if (now - lastHealthLog >= HEALTH_LOG_INTERVAL) {
       logHealth();
@@ -661,6 +741,13 @@ function startHealthMonitoring() {
   if (!cfgLogged) {
     info('SPEECH', `[SPEECH] cfg overallSilenceMs=${OVERALL_SILENCE_TIMEOUT_MS}, requiredSilenceMs=${REQUIRED_SILENCE_MS}, minSpeechMs=${MIN_SPEECH_MS}`);
     cfgLogged = true;
+  }
+}
+
+function stopSpeechHealth() {
+  if (speechHealthInterval) {
+    clearInterval(speechHealthInterval);
+    speechHealthInterval = null;
   }
 }
 
@@ -680,8 +767,7 @@ function logHealth() {
   debug('SPEECH-HEALTH', 'Health check', health);
 }
 
-// Start health monitoring
-startHealthMonitoring();
+// Health monitoring starts/stops with recognition lifecycle
 
 // Public API functions
 export function startRecognitionLoop() {

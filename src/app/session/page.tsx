@@ -11,7 +11,7 @@ import { SCENARIOS } from "@/data/scenarios";
 import CallBar from "@/components/CallBar";
 import DebugToggle from "@/components/DebugToggle";
 import { logInfo, logError } from "@/lib/logger";
-import { registerMessageHandler, unregisterMessageHandler, connectMessageDispatcher, disconnectMessageDispatcher, setMuted, isMuted } from "@/lib/messageDispatcher";
+import { registerMessageHandler, unregisterMessageHandler, connectMessageDispatcher, disconnectMessageDispatcher, setMuted, isMuted, cancelDispatcherPending, cancelDispatcherInFlight } from "@/lib/messageDispatcher";
 import { getUnifiedAudioPipeline, cleanupUnifiedAudioPipeline, useAudioDebugOverlay } from "@/lib/unifiedAudioPipeline";
 import { resetSpeechMergeState } from "@/lib/speech/enhancedSpeech";
 import { Room } from "livekit-client";
@@ -139,6 +139,16 @@ function SessionInner() {
     const { text, metadata } = request;
     const turnId = crypto.randomUUID();
     
+    // If not connected to voice, fail early
+    if (!voiceConnectedRef.current) {
+      return {
+        id: turnId,
+        text: '',
+        success: false,
+        error: 'Voice not connected',
+      };
+    }
+
     logInfo(`[Session] Processing message: "${text}" (${metadata.source})`);
     
     // Add user turn
@@ -155,6 +165,7 @@ function SessionInner() {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: (metadata as any)?.abortSignal,
         body: JSON.stringify({
           messages: [...turns, userTurn].map(turn => ({
             role: turn.role,
@@ -396,6 +407,9 @@ function SessionInner() {
     callEndedRef.current = true;
     
     try {
+      // Ensure any buffered finals are dropped and not emitted
+      resetSpeechMergeState();
+
       // Disconnect from LiveKit
       if (livekitRoom.current) {
         livekitRoom.current.disconnect();
@@ -416,6 +430,10 @@ function SessionInner() {
       // Clear the module singleton as well
       cleanupUnifiedAudioPipeline();
       
+      // Cancel any pending or in-flight dispatcher work before disconnecting
+      try { cancelDispatcherPending('hangup'); } catch {}
+      try { cancelDispatcherInFlight('hangup'); } catch {}
+
       // Disconnect message dispatcher
       disconnectMessageDispatcher();
       
