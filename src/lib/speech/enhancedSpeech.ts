@@ -2,6 +2,9 @@
 // Ensures exactly one recognizer instance with proper start/stop management
 import { info, debug, error, warn } from "@/lib/logger";
 import { sendMessage, getDispatcherPhase } from "@/lib/messageDispatcher";
+import { isFragment, endsWithHoldPhrase } from "../../audio/fragmentGuards";
+import { calcWpm, adaptTimeouts } from "../../audio/speakingRate";
+import { maybeBackchannel } from "../../tts/backchannel";
 
 export interface EnhancedSpeechControls {
   startRecognitionLoop: () => void;
@@ -35,8 +38,11 @@ type Handlers = {
   onLowConfidence?: (text: string, confidence: number) => void;
 };
 
-// Configuration
-const QUIET_GATE_MS = 75; // Post-TTS quiet gate (75-100ms)
+// Configuration (tunable via env)
+const QUIET_GATE_MS = Math.min(
+  Math.max(parseInt(process.env.NEXT_PUBLIC_QUIET_GATE_MS || '120', 10) || 120, 50),
+  200
+); // 100-150ms preferred, never >200ms
 const MIN_CONFIDENCE = 0.82; // Base confidence gate
 const MIN_CONFIDENCE_BARGE = 0.75; // Lower confidence for barge-in
 const MIN_DURATION_DROP = 250; // Only drop if both low confidence AND short duration
@@ -44,9 +50,21 @@ const HEALTH_LOG_INTERVAL = 5000; // Health check interval
 const RESTART_DELAY = 150; // Delay before auto-restart
 
 // VAD Configuration - Custom utterance finalization timing
-const MIN_SPEECH_MS = 480; // Minimum continuous speech before we consider finalizing (450-500ms)
-const REQUIRED_SILENCE_MS = 350; // Continuous silence required to finalize (300-400ms)
-const OVERALL_SILENCE_TIMEOUT_MS = 2100; // Fallback finalize if user stops speaking (2000-2200ms)
+const MIN_SPEECH_MS = parseInt(process.env.NEXT_PUBLIC_MIN_SPEECH_MS || '450', 10) || 450;
+const REQUIRED_SILENCE_MS_SHORT = parseInt(process.env.NEXT_PUBLIC_REQUIRED_SILENCE_MS_SHORT || '1100', 10) || 1100;
+const REQUIRED_SILENCE_MS_LONG = parseInt(process.env.NEXT_PUBLIC_REQUIRED_SILENCE_MS_LONG || '650', 10) || 650;
+const OVERALL_SILENCE_TIMEOUT_MS = parseInt(process.env.NEXT_PUBLIC_OVERALL_SILENCE_MS || '7000', 10) || 7000;
+const CONTINUE_WINDOW_MS = parseInt(process.env.NEXT_PUBLIC_CONTINUE_WINDOW_MS || '1800', 10) || 1800;
+const FINAL_HOLD_MS = parseInt(process.env.NEXT_PUBLIC_FINAL_HOLD_MS || '550', 10) || 550;
+const ALLOW_FRAGMENT_DEFERRALS = (process.env.NEXT_PUBLIC_ALLOW_FRAGMENT_DEFERRALS ?? 'false') !== 'false';
+const DUP_FINALS_MS = parseInt(process.env.NEXT_PUBLIC_DUPLICATE_FINALS_GUARD_MS || '3000', 10) || 3000;
+
+// Live adaptive values
+let liveMinSpeechMs = MIN_SPEECH_MS;
+let liveReqShort = REQUIRED_SILENCE_MS_SHORT;
+let liveReqLong = REQUIRED_SILENCE_MS_LONG;
+let liveOverallSilenceMs = OVERALL_SILENCE_TIMEOUT_MS;
+let liveContinueWindowMs = CONTINUE_WINDOW_MS;
 
 // Meta/filler phrases to drop
 const META_PHRASES = [
@@ -95,6 +113,22 @@ let interimBuffer = '';
 
 // Interim flag for barge-in detection
 let hasInterim = false;
+let continueTimer: ReturnType<typeof setTimeout> | null = null;
+let continueWindowActive = false;
+let lastTokenCount = 0;
+let continueWindowStartedAt = 0;
+let finalizePathHint: 'continue' | 'overall' | null = null;
+let prefetchActive = false;
+let prefetchStartedAt = 0;
+
+type EndpointMetrics = { continueWindowMsUsed: number; holdMsUsed: number; finalizePath: 'continue'|'overall' };
+let lastEndpointMetrics: EndpointMetrics | null = null;
+
+export function getAndResetEndpointMetrics(): EndpointMetrics | null {
+  const m = lastEndpointMetrics;
+  lastEndpointMetrics = null;
+  return m;
+}
 
 // Duplicate suppression
 const recentUtterances = new Map<string, number>(); // hash -> timestamp
@@ -343,6 +377,25 @@ function handleInterimResult(transcript: string, confidence: number) {
   // Update current utterance
   vadState.currentUtterance = transcript;
   vadState.lastSpeechTime = now;
+  const tokenCount = (transcript || '').trim().split(/\s+/).filter(Boolean).length;
+  if (tokenCount > 0) {
+    // If we see growth during continue window, cancel the pending finalize
+    if (continueWindowActive && tokenCount > lastTokenCount) {
+      if (continueTimer) clearTimeout(continueTimer);
+      continueTimer = null;
+      continueWindowActive = false;
+      info('SPEECH', 'endpoint: resumed within window — cancel finalize');
+      info('SPEECH', 'prefetch:cancel');
+      prefetchActive = false;
+    }
+    lastTokenCount = tokenCount;
+  }
+  // Cancel any pending final hold if user resumes speaking
+  if (holdTimer) {
+    clearTimeout(holdTimer);
+    holdTimer = null;
+    debug('SPEECH', 'final hold canceled by new speech');
+  }
   
   // If we weren't speaking, start speech detection
   if (!vadState.isSpeaking) {
@@ -357,7 +410,7 @@ function handleInterimResult(transcript: string, confidence: number) {
     vadState.overallTimer = setTimeout(() => {
       debug('SPEECH', 'Overall silence timeout reached - finalizing utterance');
       finalizeCurrentUtterance();
-    }, OVERALL_SILENCE_TIMEOUT_MS);
+    }, liveOverallSilenceMs);
   }
   
   // Clear any existing silence timer since we have speech
@@ -383,6 +436,8 @@ function handleWebSpeechFinal(transcript: string, confidence: number) {
   // Update current utterance with final result
   vadState.currentUtterance = transcript;
   vadState.lastSpeechTime = now;
+  const tokenCount = (transcript || '').trim().split(/\s+/).filter(Boolean).length;
+  if (tokenCount > 0) lastTokenCount = tokenCount;
   
   // If we weren't speaking, start speech detection
   if (!vadState.isSpeaking) {
@@ -402,17 +457,34 @@ function handleWebSpeechFinal(transcript: string, confidence: number) {
   
   // Check if we've met minimum speech duration
   const speechDuration = now - vadState.speechStartTime;
-  if (speechDuration >= MIN_SPEECH_MS) {
+  if (speechDuration >= liveMinSpeechMs) {
     // Start silence detection timer
     if (vadState.silenceTimer) {
       clearTimeout(vadState.silenceTimer);
     }
+    const words = (vadState.currentUtterance || '').trim().split(/\s+/).filter(Boolean).length;
+    const isShort = words < 6 || lastTokenCount < 12;
+    const reqSil = isShort ? liveReqShort : liveReqLong;
     vadState.silenceTimer = setTimeout(() => {
-      debug('SPEECH', 'Required silence period reached - finalizing utterance');
-      finalizeCurrentUtterance();
-    }, REQUIRED_SILENCE_MS);
+      // Start continue window instead of immediate finalize
+      if (continueTimer) clearTimeout(continueTimer);
+      continueWindowActive = true;
+      // Filler extend tail tokens
+      let localContinueMs = liveContinueWindowMs;
+      if (/\b(uh|um|hold on|one sec(ond)?|wait|so\.?\.?\.?|and\.?\.?\.?)$/i.test((vadState.currentUtterance||'').trim())) {
+        localContinueMs += 800;
+      }
+      info('SPEECH', `endpoint: continueWindow start (ms=${localContinueMs})`);
+      continueWindowStartedAt = Date.now();
+      finalizePathHint = 'continue';
+      continueTimer = window.setTimeout(() => {
+        continueWindowActive = false;
+        info('SPEECH', 'endpoint: finalized after window');
+        finalizeCurrentUtterance();
+      }, localContinueMs);
+    }, reqSil);
   } else {
-    debug('SPEECH', `Speech duration ${speechDuration}ms < ${MIN_SPEECH_MS}ms - waiting for minimum speech`);
+    debug('SPEECH', `Speech duration ${speechDuration}ms < ${liveMinSpeechMs}ms - waiting for minimum speech`);
   }
 }
 
@@ -424,24 +496,70 @@ function finalizeCurrentUtterance() {
   
   const transcript = vadState.currentUtterance;
   const speechDuration = Date.now() - vadState.speechStartTime;
+  const path = finalizePathHint || 'overall';
+  finalizePathHint = null;
   
   debug('SPEECH', `Finalizing utterance: "${transcript}" (duration: ${speechDuration}ms)`);
+  info('SPEECH', `endpoint: finalizePath=${path}`);
 
-  // Buffer finals while inflight/tts (no timer scheduling here to avoid dupes)
+  // Fragment guard: extend silence and backchannel instead of finalizing
+  const guardEnabled = (process.env.NEXT_PUBLIC_VAD_FRAGMENT_GUARD ?? 'true') !== 'false';
+  if (guardEnabled && isFragment(transcript) && ALLOW_FRAGMENT_DEFERRALS) {
+    // Defer finalization by 1500ms; schedule backchannel ~900ms
+    try {
+      if (continueTimer) clearTimeout(continueTimer);
+      continueWindowActive = true;
+      finalizePathHint = 'continue';
+      continueTimer = window.setTimeout(() => {
+        continueWindowActive = false;
+        info('SPEECH', 'endpoint: finalized after fragment deferral');
+        finalizeCurrentUtterance();
+      }, 1500);
+      setTimeout(() => { maybeBackchannel(); }, 900);
+      info('SPEECH', 'speech.fragment_deferrals', { utteranceDurationMs: speechDuration, words: transcript.split(/\s+/).filter(Boolean).length });
+      return;
+    } catch {}
+  }
+
+  // Handle finals during inflight/TTS
   try {
     const phase = getDispatcherPhase?.() as any || 'idle';
-    if (phase === 'tts' || phase === 'inflight') {
+    if (phase === 'tts') {
+      // Pass-through during TTS so pipeline can barge immediately
+      info('SPEECH', '[SPEECH] Passing final through during TTS for legacy ASR barge');
+      try { handlers.onFinal?.(transcript); } catch {}
+      try { (handlers as any).onFinalResult?.(transcript, 0.9); } catch {}
+      hasInterim = false;
+      resetVADState();
+      return;
+    } else if (phase === 'inflight') {
+      // Still buffer during inflight
       setHeld(transcript, 0.9);
       info('SPEECH', `[SPEECH] Final buffered (phase=${phase}) without scheduling timer: "${transcript}"`);
-      // Clear interim flag and reset VAD state, but do not dispatch yet
       hasInterim = false;
       resetVADState();
       return;
     }
   } catch {}
   
-  // Process the final result
-  processFinalResult(transcript, 0.9); // Use high confidence for our VAD-controlled results
+  // Process the final result; if path is continue, kill hold (0ms); if overall, cap to 200ms
+  const holdOverrideMs = path === 'continue' ? 0 : -1;
+  processFinalResult(transcript, 0.9, holdOverrideMs);
+
+  // Adaptive timeouts for next turn
+  try {
+    const dynEnabled = (process.env.NEXT_PUBLIC_VAD_DYNAMIC_TIMEOUTS ?? 'true') !== 'false';
+    if (dynEnabled) {
+      const words = (transcript || '').trim().split(/\s+/).filter(Boolean).length;
+      const wpm = calcWpm(words, speechDuration);
+      const cfg = adaptTimeouts(wpm);
+      liveOverallSilenceMs = cfg.overallSilenceMs;
+      liveContinueWindowMs = cfg.continueWindowMs;
+      liveReqShort = cfg.requiredSilenceMsShort;
+      liveReqLong = cfg.requiredSilenceMsLong;
+      info('SPEECH', 'speech.dynamic_timeouts_applied', { wpm: Math.round(wpm), bucket: cfg });
+    }
+  } catch {}
   
   // Clear interim flag when finalizing utterance
   hasInterim = false;
@@ -472,6 +590,11 @@ function resetVADState() {
     clearTimeout(vadState.overallTimer);
     vadState.overallTimer = null;
   }
+  if (continueTimer) {
+    clearTimeout(continueTimer);
+    continueTimer = null;
+  }
+  continueWindowActive = false;
   
   // Clear interim flag when resetting VAD state
   hasInterim = false;
@@ -479,8 +602,8 @@ function resetVADState() {
   debug('SPEECH', 'VAD state reset');
 }
 
-// Process final speech result
-function processFinalResult(transcript: string, confidence: number) {
+// Process final speech result (with optional holdOverrideMs)
+function processFinalResult(transcript: string, confidence: number, holdOverrideMs?: number) {
   // Early gate: prevent finals from re-entering during TTS or in-flight AI
   const phase = getDispatcherPhase();
   if (phase === 'tts') {
@@ -531,8 +654,9 @@ function processFinalResult(transcript: string, confidence: number) {
     return;
   }
   
-  // Skip meta phrases
-  if (isMetaPhrase(transcript)) {
+  // Skip meta phrases only when NOT in TTS; allow them to barge during TTS if sustained
+  const phaseNow = getDispatcherPhase();
+  if (phaseNow !== 'tts' && isMetaPhrase(transcript)) {
     debug('SPEECH', `Dropping meta phrase: "${transcript}"`);
     return;
   }
@@ -573,8 +697,34 @@ function processFinalResult(transcript: string, confidence: number) {
     }
 
     setBaseFinal(transcript, confidence);
-    const delay = Math.min(holdMsFor(heldFinal), MAX_JOIN_MS);
-    startHoldTimer(delay);
+    // Prefetch hint on first base-final
+    if (!prefetchActive) {
+      info('SPEECH', 'prefetch:start');
+      prefetchActive = true;
+      prefetchStartedAt = Date.now();
+      // Start generation but avoid double-send on emitHeld
+      try {
+        sendMessage({
+          text: heldFinal,
+          metadata: { source: 'speech', prefetch: true, timestamp: prefetchStartedAt }
+        } as any);
+      } catch {}
+    }
+    let delay = Math.min(holdMsFor(heldFinal), MAX_JOIN_MS);
+    if (holdOverrideMs === 0) delay = 0;
+    else if (holdOverrideMs && holdOverrideMs > 0) delay = holdOverrideMs;
+    else if (holdOverrideMs === -1) delay = Math.min(delay, 200);
+    // Record endpoint metrics for E2TTS
+    lastEndpointMetrics = {
+      continueWindowMsUsed: continueWindowStartedAt ? (Date.now() - continueWindowStartedAt) : 0,
+      holdMsUsed: delay,
+      finalizePath: (continueWindowStartedAt && !continueWindowActive) ? 'continue' : 'overall'
+    };
+    if (delay <= 0) {
+      emitHeld('forced');
+    } else {
+      startHoldTimer(delay);
+    }
     return;
   } catch (e) {
     console.error('processFinalResult error', e);
@@ -659,7 +809,7 @@ function startHealthMonitoring() {
 
   // One-time startup config log
   if (!cfgLogged) {
-    info('SPEECH', `[SPEECH] cfg overallSilenceMs=${OVERALL_SILENCE_TIMEOUT_MS}, requiredSilenceMs=${REQUIRED_SILENCE_MS}, minSpeechMs=${MIN_SPEECH_MS}`);
+    info('SPEECH', `[SPEECH] cfg overallSilenceMs=${OVERALL_SILENCE_TIMEOUT_MS}, requiredSilenceMsShort=${REQUIRED_SILENCE_MS_SHORT}, requiredSilenceMsLong=${REQUIRED_SILENCE_MS_LONG}, continueWindowMs=${CONTINUE_WINDOW_MS}, minSpeechMs=${MIN_SPEECH_MS}`);
     cfgLogged = true;
   }
 }

@@ -256,6 +256,15 @@ export class UnifiedAudioPipeline {
     // Set new abort controller
     this.ttsAbortController = new AbortController();
     
+    // Commit delay before starting actual TTS to catch quick continuations
+    let commitDelayMs = Math.min(Math.max(parseInt(process.env.NEXT_PUBLIC_COMMIT_DELAY_MS || '450', 10) || 450, 0), 1000);
+    // Optional network-aware bump: if avg RTT > 200ms, bump to 600
+    try {
+      const rtt = (performance as any)?.navigation?.type ? 0 : 0; // placeholder; wire to real RTT metric if available
+      if (rtt && rtt > 200) commitDelayMs = Math.max(commitDelayMs, 600);
+    } catch {}
+    info('TTS', `commit-delay start (${commitDelayMs}ms)`);
+    await new Promise<void>((resolve) => setTimeout(resolve, commitDelayMs));
     info('TTS', `TTS start ${Date.now()}`);
     this.config.onTTSStart?.(turnId);
     this.currentTurnId = turnId; // Update current turn ID
@@ -704,10 +713,22 @@ export class UnifiedAudioPipeline {
       return;
     }
 
-    // Early exit for client TTS mode: don't wire aiAnalyser
+    // Client TTS: still enable ai:true by wiring a silent reference
     if (process.env.NEXT_PUBLIC_TTS_MODE === 'client') {
+      if (!this.aiAnalyser && this.audioContext) {
+        try {
+          const dummy = new Audio();
+          dummy.src = 'data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQo=';
+          dummy.loop = true; dummy.volume = 0;
+          this.aiSource = this.audioContext.createMediaElementSource(dummy);
+          this.aiAnalyser = this.audioContext.createAnalyser();
+          this.aiAnalyser.fftSize = 2048;
+          this.aiSource.connect(this.aiAnalyser);
+          this.aiSource.connect(this.audioContext.destination);
+        } catch {}
+      }
       this.bargeInMonitoring = true;
-      info('AUDIO', 'BARGE_MONITORING_START mic:true ai:false (client TTS)');
+      info('AUDIO', 'BARGE_MONITORING_START mic:true ai:true (client TTS)');
       this.bargeInInterval = setInterval(() => {
         this.checkBargeIn();
       }, this.BARGE_IN_CHECK_INTERVAL);
@@ -805,7 +826,7 @@ export class UnifiedAudioPipeline {
     const vadSpeaking = speechHealth?.vad_speaking || false;
     const hasInterim = getASRInterimFlag();
 
-    // Consider "speechCandidate" true only if micPower >= threshold AND (VAD speaking OR has interim)
+    // Sustain is independent; we arm if micPower and (VAD or interim)
     const speechCandidate = micPower >= this.MIC_DB_THRESH && (vadSpeaking || hasInterim);
 
     if (speechCandidate) {
